@@ -1,0 +1,17 @@
+node_modules/
+out/
+release/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.log
+*.tsbuildinfo
+.DS_Store
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+.tmp-*
+/screenshots/
