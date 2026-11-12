@@ -28,7 +28,9 @@ StudyNext 是学习通第三方桌面客户端，核心价值是：
 - `@shared` 指向 `src/shared`，`@renderer` 指向 `src/renderer/src`；不要用脆弱的相对路径穿透层。
 - `tsconfig` 开启 `strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`。新增代码必须通过 `npm run typecheck`。
 - 日期以 ISO 字符串跨 IPC/数据库传输；展示时使用本机时区。禁止在数据层存“本地化字符串”。
+- **所有源码、测试、JSON、Markdown 必须是 UTF-8（无 BOM）**。禁止使用 Windows PowerShell 的 `Get-Content`/`Set-Content` 默认编码（CP936）批量修改含中文的文件；优先使用编辑器/`write`、Python `encoding='utf-8'` 或 Prettier，并在修改后运行 `npm run format:check` 与目标文件编码检查。历史上的 P1 CP936 乱码事故见 `docs/ISSUES.md`。
 - 不在源码、日志、测试快照中写入真实账号、密码、Cookie、Token。
+- v0.4.0 的研究文档与 `scripts/notification-poc/` 是设计与独立 PoC，不代表已授权实时适配器；任何真实学习通 Provider 仍必须通过 `docs/V0.4.0_GO_NO_GO.md` 的硬门槛。
 
 ## 3. 进程与信任边界
 

@@ -9,6 +9,8 @@
 - CSV/ICS/JSON 学习快照导入、授权适配器接口、同步状态机已完成；真实学习通同步仍为 `not_configured`。
 - Windows NSIS 安装包已可生成。
 
+v0.4.0 第一轮（2026-11-12）已完成真实接入研究、14 项能力矩阵、Provider/同步中心设计和 Windows 通知独立 PoC；实时适配器仍为 `No-Go`，详见 [V0.4.0_PLAN.md](V0.4.0_PLAN.md)、[CHAOXING_ACCESS_MATRIX.md](CHAOXING_ACCESS_MATRIX.md)、[CHAOXING_INTEGRATION_RESEARCH.md](CHAOXING_INTEGRATION_RESEARCH.md)、[V0.4.0_GO_NO_GO.md](V0.4.0_GO_NO_GO.md) 和 [WINDOWS_NOTIFICATION_POC.md](WINDOWS_NOTIFICATION_POC.md)。
+
 ## 阶段 A：真实数据接入的前置条件（阻塞项）
 
 真实接入不是纯代码工作，必须先取得以下材料：

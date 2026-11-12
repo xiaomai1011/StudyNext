@@ -2,7 +2,7 @@
 
 StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。它把课程、任务、DDL、日历和官方网页入口放进一个本地优先的桌面应用，重点解决网页版信息分散、截止时间不集中、提醒不可控的问题。
 
-> 当前版本是 **0.3.0（桌面客户端 + 学习中心 + 真实接入边界）**。课程、任务、章节进度、题库、通知与演示数据都保存在本机；没有配置学习通授权数据源时，应用会明确显示“未配置”，不会伪造同步结果。
+> 当前应用版本是 **0.3.0（桌面客户端 + 学习中心 + 真实接入边界）**。v0.4.0 第一轮只做学习通接入研究、Provider/同步中心设计、Windows 通知 PoC，不包含未经授权的实时适配器。课程、任务、章节进度、题库、通知与演示数据都保存在本机；没有配置学习通授权数据源时，应用会明确显示“未配置”，不会伪造同步结果。
 
 ![StudyNext 仪表盘](docs/screenshots/dashboard-light.png)
 
@@ -66,7 +66,7 @@ StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。�
 - 提醒规则持久化到 SQLite；任务完成、删除或截止时间变更时同步调整
 - 通知投递去重（`notification_deliveries`），同一任务同一提醒不会重复弹出
 - 应用运行期间每 30 秒检查一次；**应用完全退出后不会继续提醒**
-- Windows 系统级计划通知的可行性与限制见 [通知调研](docs/WINDOWS_NOTIFICATIONS.md)；当前版本不把进程内定时器包装成系统计划任务
+- Windows 系统级计划通知的可行性与限制见 [通知调研](docs/WINDOWS_NOTIFICATIONS.md) 与 [v0.4 PoC](docs/WINDOWS_NOTIFICATION_POC.md)；当前版本不把进程内定时器包装成系统计划任务
 - 重新启动时补发最近 10 分钟内错过的提醒（可在设置中关闭）
 - 系统通知不可用时仍会发送应用内提醒事件，不会静默丢失 DDL
 - 启动补发、下一条提醒时间会在设置页和首页同步信息中显示
@@ -96,7 +96,8 @@ StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。�
 ### 真实接入边界
 
 - [学习通接入可行性报告](docs/CHAOXING_INTEGRATION_FEASIBILITY.md)：公开 OAuth 入口、个人开发者限制、`xuexitong-cli` 只读接口审查与未授权风险
-- 当前不调用私有接口、不读取登录凭据、不把打开官方页面描述成同步成功
+- v0.4.0 研究基线：[接入能力矩阵](docs/CHAOXING_ACCESS_MATRIX.md)、[接入研究](docs/CHAOXING_INTEGRATION_RESEARCH.md)、[Go/No-Go](docs/V0.4.0_GO_NO_GO.md)、[研究与开发计划](docs/V0.4.0_PLAN.md)
+- 当前不调用私有接口、不读取登录凭据、不把打开官方页面描述成同步成功；实时适配器的硬门槛见 Go/No-Go 文档
 - 未来只有取得正式授权后，才实现 `AuthorizedDataAdapter` 的实时数据拉取
 
 ### 数据导入
@@ -279,6 +280,11 @@ studynext/
 - [测试报告](docs/TEST_REPORT.md)
 - [会话优化落地记录](docs/OPTIMIZATION.md)
 - [开发问题记录与开源项目审查](docs/ISSUES.md)
+- [v0.4.0 研究与开发计划](docs/V0.4.0_PLAN.md)
+- [学习通数据接入能力矩阵](docs/CHAOXING_ACCESS_MATRIX.md)
+- [学习通真实接入研究报告](docs/CHAOXING_INTEGRATION_RESEARCH.md)
+- [Windows 通知 PoC](docs/WINDOWS_NOTIFICATION_POC.md)
+- [v0.4.0 Go/No-Go](docs/V0.4.0_GO_NO_GO.md)
 - [下一阶段计划](docs/ROADMAP.md)
 - [工程约束与 Agent 指南](AGENTS.md)
 
