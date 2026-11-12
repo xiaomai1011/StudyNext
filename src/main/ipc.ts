@@ -26,6 +26,8 @@ import type { StudyNextStore } from './storage/store'
 import type { NotificationScheduler } from './notifications/scheduler'
 import type { SyncService } from './integrations/sync'
 import type { PortalService } from './portal/service'
+import type { ChaoxingSessionService } from './integrations/chaoxing/service'
+import type { ChaoxingCredentialStore } from './integrations/chaoxing/credentials'
 import { importTasksFromFile } from './integrations/import'
 import { importStudySnapshot } from './integrations/snapshot'
 import type { AiService } from './integrations/ai'
@@ -36,6 +38,8 @@ interface RegisterIpcOptions {
   store: StudyNextStore
   scheduler: NotificationScheduler
   sync: SyncService
+  chaoxing: ChaoxingSessionService
+  credentials: ChaoxingCredentialStore
   ai: AiService
   portal: PortalService
   getWindow: () => BrowserWindow | null
@@ -90,6 +94,8 @@ export function registerIpc(options: RegisterIpcOptions): void {
     store,
     scheduler,
     sync,
+    chaoxing,
+    credentials,
     ai,
     portal,
     getWindow,
@@ -120,6 +126,32 @@ export function registerIpc(options: RegisterIpcOptions): void {
     })
   }
 
+  /**
+   * 进程重启后 SyncService 的内存状态会回到 not_configured，
+   * 但学习通会话和上次同步结果已经持久化；bootstrap 时用会话状态补齐，
+   * 避免“明明同步成功、界面却显示未连接”。
+   */
+  const effectiveSyncStatus = (): SyncStatus => {
+    const base = sync.getStatus()
+    const session = chaoxing.getStatus()
+    if (
+      base.state === 'not_configured' &&
+      session.authState === 'authenticated' &&
+      session.lastSyncAt
+    ) {
+      return {
+        state: 'success',
+        message: session.message,
+        source: 'chaoxing',
+        lastAttemptAt: session.lastAttemptAt,
+        lastSuccessAt: session.lastSyncAt,
+        detail: '通过用户本人 Web 登录会话只读同步，不是 OAuth 授权。',
+        snapshot: null
+      }
+    }
+    return base
+  }
+
   handle(IPC.bootstrap, () => {
     const bootstrap: BootstrapData = {
       courses: store.listCourses(),
@@ -128,8 +160,9 @@ export function registerIpc(options: RegisterIpcOptions): void {
       questions: store.listQuestions(),
       tasks: store.listTasks(),
       settings: store.getSettings(),
-      notices,
-      syncStatus: sync.getStatus(),
+      notices: chaoxing.getStatus().lastSyncAt ? [] : notices,
+      syncStatus: effectiveSyncStatus(),
+      chaoxing: chaoxing.getStatus(),
       officialEntries: store.listOfficialEntries(),
       appInfo,
       reminderRuntime: {
@@ -249,8 +282,44 @@ export function registerIpc(options: RegisterIpcOptions): void {
     return result
   })
 
-  handle(IPC.syncStatus, () => sync.getStatus())
-  handle(IPC.syncRun, () => sync.run())
+  handle(IPC.syncStatus, () => effectiveSyncStatus())
+  handle(IPC.syncRun, async () => {
+    const status = await chaoxing.check()
+    if (status.authState !== 'authenticated') {
+      sync.recordSessionResult({
+        state: 'not_configured',
+        message: '请先在 Portal 登录学习通，再执行同步',
+        detail: status.message,
+        lastSuccessAt: status.lastSyncAt
+      })
+      return effectiveSyncStatus()
+    }
+    await chaoxing.sync()
+    scheduler.refresh()
+    return effectiveSyncStatus()
+  })
+
+  handle(IPC.chaoxingStatus, () => chaoxing.getStatus())
+  handle(IPC.chaoxingCheck, () => chaoxing.check())
+  handle(IPC.chaoxingSync, async () => {
+    const status = await chaoxing.sync()
+    scheduler.refresh()
+    return status
+  })
+
+  handle(IPC.chaoxingCredentialsStatus, () => credentials.status())
+  handle(IPC.chaoxingCredentialsSave, (_event, input) => {
+    const parsed = parseInput(
+      z.object({
+        username: z.string().trim().min(1, '请输入学习通账号').max(120),
+        password: z.string().min(1, '请输入学习通密码').max(200)
+      }),
+      input
+    )
+    return credentials.save(parsed.username, parsed.password)
+  })
+  handle(IPC.chaoxingCredentialsClear, () => credentials.clear())
+  handle(IPC.chaoxingCredentialsFill, () => portal.fillCredentials())
 
   handle(IPC.portalOpen, (_event, entryId) => {
     return portal.open(parseInput(z.string().min(1).max(120), entryId))

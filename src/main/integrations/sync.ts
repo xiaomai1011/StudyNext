@@ -70,8 +70,7 @@ export class SyncService {
     return { ...this.status, snapshot: this.readSnapshotInfo() }
   }
 
-  recordSnapshotImport(result: SnapshotImportResult): SyncStatus {
-    if (result.snapshot) {
+  recordSnapshotImport(result: SnapshotImportResult): SyncStatus {    if (result.snapshot) {
       this.store.setMeta(SNAPSHOT_META_KEY, JSON.stringify(result.snapshot))
     }
     const snapshot = this.readSnapshotInfo()
@@ -93,6 +92,32 @@ export class SyncService {
     return this.getStatus()
   }
 
+  /**
+   * 接收 ChaoxingSessionService 的结果，让现有同步横幅反映真实会话同步状态。
+   * 状态机沿用 not_configured/syncing/success/partial/failure 五态。
+   */
+  recordSessionResult(result: {
+    state: 'not_configured' | 'success' | 'partial' | 'failure'
+    message: string
+    detail: string | null
+    lastSuccessAt: string | null
+  }): SyncStatus {
+    const succeeded = result.state === 'success' || result.state === 'partial'
+    this.status = {
+      ...this.status,
+      state: result.state,
+      message: result.message,
+      source: 'chaoxing',
+      lastAttemptAt: new Date().toISOString(),
+      lastSuccessAt: succeeded ? result.lastSuccessAt : this.status.lastSuccessAt,
+      detail:
+        result.detail ??
+        (succeeded ? '通过用户本人 Web 登录会话只读同步，不是 OAuth 授权。' : null),
+      snapshot: this.readSnapshotInfo()
+    }
+    return this.getStatus()
+  }
+
   async run(): Promise<SyncStatus> {
     if (!this.adapter.isConfigured()) {
       const snapshot = this.readSnapshotInfo()
@@ -100,10 +125,10 @@ export class SyncService {
         ...this.buildBaseStatus(),
         state: 'not_configured',
         message: snapshot
-          ? `实时授权同步尚未配置；当前使用 ${snapshot.importedAt.slice(0, 10)} 导入的学习快照。`
-          : '学习通授权数据同步尚未配置。当前可使用本地任务、CSV、ICS 或学习快照导入。',
+          ? `学习通 Web Session 尚未连接；当前使用 ${snapshot.importedAt.slice(0, 10)} 导入的学习快照。`
+          : '学习通 Web Session 尚未连接。请先在官方页面登录，再到设置检查登录状态。',
         lastAttemptAt: new Date().toISOString(),
-        detail: '未发现可用的个人开发者授权凭据；不会伪造同步结果。',
+        detail: '应用只复用你本人在隔离 Portal 中建立的会话，不保存 Cookie，也不会伪造同步结果。',
         snapshot
       }
       return this.getStatus()
@@ -160,14 +185,14 @@ export class SyncService {
     return {
       state: 'not_configured',
       message: snapshot
-        ? `实时授权同步尚未配置；当前使用 ${snapshot.importedAt.slice(0, 10)} 导入的本地学习快照。`
-        : '未配置学习通授权数据源，当前使用本地数据。',
+        ? `学习通 Web Session 尚未连接；当前使用 ${snapshot.importedAt.slice(0, 10)} 导入的本地学习快照。`
+        : '学习通 Web Session 尚未连接，当前使用本地数据。',
       source: snapshot ? 'import' : null,
       lastAttemptAt: snapshot?.importedAt ?? null,
       lastSuccessAt: snapshot?.importedAt ?? null,
       detail: snapshot
-        ? '学习快照由用户主动导入，只保存在本机，不是学习通实时同步。'
-        : '需要机构合作或正式授权接口；本应用不访问学习通私有接口。',
+        ? '学习快照由用户主动导入，只保存在本机，不是学习通实时同步；可在官方页面登录后手动同步。'
+        : '在官方页面完成登录后，回到本页检查登录状态，再手动同步课程与作业。',
       snapshot
     }
   }

@@ -14,6 +14,32 @@ export type TaskField =
   | 'reminders'
 export type DataSource = 'demo' | 'manual' | 'import' | 'chaoxing'
 export type SyncState = 'not_configured' | 'syncing' | 'success' | 'partial' | 'failure'
+export type ChaoxingAuthState = 'unknown' | 'logged_out' | 'authenticated' | 'expired'
+export type ChaoxingTransport = 'session_fetch' | 'net_request' | 'none'
+export type PlatformStatusKind = 'pending' | 'done' | 'unknown'
+
+export interface ChaoxingCredentialStatus {
+  saved: boolean
+  username: string | null
+  encryptionAvailable: boolean
+}
+
+export interface ChaoxingSessionStatus {
+  authState: ChaoxingAuthState
+  connection: 'web_session'
+  message: string
+  displayName: string | null
+  school: string | null
+  checkedAt: string | null
+  lastSyncAt: string | null
+  lastAttemptAt: string | null
+  syncedCourses: number
+  syncedTasks: number
+  transport: ChaoxingTransport
+  httpStatus: number | null
+  cookieDomainCount: number
+  detail: string | null
+}
 
 export interface CourseSession {
   id: string
@@ -35,6 +61,8 @@ export interface Course {
   color: string
   favorite: boolean
   schedule: CourseSession[]
+  semesterStart?: string | null
+  maxWeek?: number
   source: DataSource
   sourceUrl: string | null
   createdAt: string
@@ -150,6 +178,9 @@ export interface Task {
   source: DataSource
   externalId: string | null
   sourceUpdatedAt: string | null
+  sourceUrl: string | null
+  platformStatus: string | null
+  platformStatusKind: PlatformStatusKind
   manualFields: TaskField[]
   fieldSources: Partial<Record<TaskField, DataSource>>
   createdAt: string
@@ -166,6 +197,7 @@ export interface TaskUpsertInput {
   dueAt: string
   reminderOffsets: number[]
   status?: TaskStatus
+  sourceUrl?: string | null
 }
 
 export interface AppSettings {
@@ -241,6 +273,7 @@ export interface BootstrapData {
   settings: AppSettings
   notices: AppNotice[]
   syncStatus: SyncStatus
+  chaoxing: ChaoxingSessionStatus
   officialEntries: OfficialEntry[]
   appInfo: AppInfo
   reminderRuntime: {
@@ -382,6 +415,15 @@ export interface StudyNextApi {
   sync: {
     status: () => Promise<SyncStatus>
     run: () => Promise<SyncStatus>
+  }
+  chaoxing: {
+    status: () => Promise<ChaoxingSessionStatus>
+    check: () => Promise<ChaoxingSessionStatus>
+    sync: () => Promise<ChaoxingSessionStatus>
+    credentialsStatus: () => Promise<ChaoxingCredentialStatus>
+    saveCredentials: (input: { username: string; password: string }) => Promise<ChaoxingCredentialStatus>
+    clearCredentials: () => Promise<ChaoxingCredentialStatus>
+    fillCredentials: () => Promise<boolean>
   }
   portal: {
     open: (entryId: string) => Promise<void>

@@ -5,7 +5,8 @@ import {
   isAllowedPortalUrl,
   isPortalNavigationAllowed,
   isTrustedSsoUrl,
-  safeDisplayUrl
+  safeDisplayUrl,
+  upgradePortalHttpUrl
 } from '../../src/main/portal/security'
 import { StudyNextStore } from '../../src/main/storage/store'
 import { ChaoxingAuthorizedAdapter, SyncService } from '../../src/main/integrations/sync'
@@ -50,6 +51,13 @@ describe('官方页面隔离层', () => {
     })
   })
 
+  it('学习通 http 跳转会升级为同域 HTTPS，其他域仍拒绝', () => {
+    expect(upgradePortalHttpUrl('http://i.chaoxing.com/base')).toBe('https://i.chaoxing.com/base')
+    expect(upgradePortalHttpUrl('https://i.chaoxing.com/base')).toBeNull()
+    expect(upgradePortalHttpUrl('http://evil.example/base')).toBeNull()
+    expect(upgradePortalHttpUrl('http://user:pass@i.chaoxing.com/base')).toBeNull()
+  })
+
   it('展示 URL 时去除查询参数与 hash，避免泄露令牌', () => {
     expect(safeDisplayUrl('https://i.chaoxing.com/base?token=secret#/home')).toBe(
       'https://i.chaoxing.com/base'
@@ -81,7 +89,7 @@ describe('授权同步适配器', () => {
     const status = await service.run()
     expect(status.state).toBe('not_configured')
     expect(status.lastSuccessAt).toBeNull()
-    expect(status.message).toContain('尚未配置')
+    expect(status.message).toContain('尚未连接')
     expect(new ChaoxingAuthorizedAdapter().isConfigured()).toBe(false)
   })
 

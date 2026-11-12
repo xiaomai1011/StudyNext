@@ -22,6 +22,7 @@ import {
 import type {
   AppSettings,
   BootstrapData,
+  ChaoxingSessionStatus,
   NavigateTarget,
   OfficialEntry,
   OfficialEntryInput,
@@ -33,7 +34,7 @@ import type {
   Task,
   TaskUpsertInput
 } from '@shared/types'
-import { formatRemainingCompact, sortTasksByDue } from '@shared/domain'
+import { dueBucket, formatRemainingCompact, isDueAtUnknown, sortTasksByDue } from '@shared/domain'
 import { Dashboard } from './pages/Dashboard'
 import { Courses } from './pages/Courses'
 import { Tasks } from './pages/Tasks'
@@ -186,13 +187,19 @@ export default function App(): JSX.Element {
     return (
       sortTasksByDue(
         data.tasks.filter(
-          (task) => task.status === 'todo' && new Date(task.dueAt).getTime() >= now.getTime()
+          (task) =>
+            task.status === 'todo' &&
+            !isDueAtUnknown(task.dueAt) &&
+            new Date(task.dueAt).getTime() >= now.getTime()
         )
       )[0] ?? null
     )
   }, [data])
 
-  const openCount = data?.tasks.filter((task) => task.status === 'todo').length ?? 0
+  const openCount =
+    data?.tasks.filter(
+      (task) => task.status === 'todo' && dueBucket(task, new Date()) !== 'overdue'
+    ).length ?? 0
 
   const navigate = useCallback((target: NavigateTarget): void => {
     setRoute(target)
@@ -362,6 +369,18 @@ export default function App(): JSX.Element {
     return next
   }
 
+  const handleChaoxingCheck = async (): Promise<ChaoxingSessionStatus> => {
+    const next = await api.chaoxing.check()
+    setData((current) => (current ? { ...current, chaoxing: next } : current))
+    return next
+  }
+
+  const handleChaoxingSync = async (): Promise<ChaoxingSessionStatus> => {
+    const next = await api.chaoxing.sync()
+    await refreshBootstrap()
+    return next
+  }
+
   const handleCreateEntry = async (input: OfficialEntryInput): Promise<void> => {
     const entry = await api.entries.create(input)
     setData((current) =>
@@ -432,24 +451,23 @@ export default function App(): JSX.Element {
   }
 
   const snapshotImported = data.syncStatus.source === 'import'
+  const chaoxingConnected = data.chaoxing.authState === 'authenticated'
   const syncLabel =
-    data.syncStatus.state === 'not_configured'
+    data.syncStatus.state === 'failure'
       ? snapshotImported
-        ? '本地快照 · 未连接学习通'
-        : '本地模式 · 未连接学习通'
-      : data.syncStatus.state === 'failure'
+        ? '快照导入失败 · 本地数据可用'
+        : '同步失败 · 本地数据可用'
+      : data.syncStatus.state === 'partial'
         ? snapshotImported
-          ? '快照导入失败 · 本地数据可用'
-          : '同步失败 · 本地数据可用'
-        : data.syncStatus.state === 'partial'
-          ? snapshotImported
-            ? '快照部分导入 · 检查详情'
-            : '部分同步 · 检查详情'
-          : data.syncStatus.state === 'syncing'
-            ? '正在同步…'
+          ? '快照部分导入 · 检查详情'
+          : '部分同步 · 检查详情'
+        : data.syncStatus.state === 'syncing'
+          ? '正在同步…'
+          : chaoxingConnected
+            ? '已连接学习通 · Web Session'
             : snapshotImported
-              ? '本地快照 · 非实时同步'
-              : '已连接学习通数据源'
+              ? '本地快照 · 未连接学习通'
+              : '本地模式 · 未连接学习通'
 
   const page: JSX.Element =
     route === 'dashboard' ? (
@@ -515,6 +533,7 @@ export default function App(): JSX.Element {
       <Settings
         settings={data.settings}
         syncStatus={data.syncStatus}
+        chaoxing={data.chaoxing}
         entries={data.officialEntries}
         appInfo={data.appInfo}
         reminderRuntime={data.reminderRuntime}
@@ -524,6 +543,8 @@ export default function App(): JSX.Element {
         onToggleEntry={handleToggleEntry}
         onRemoveEntry={handleRemoveEntry}
         onSyncRun={handleSyncRun}
+        onChaoxingCheck={handleChaoxingCheck}
+        onChaoxingSync={handleChaoxingSync}
         onImported={refreshBootstrap}
         notify={notify}
       />
@@ -615,7 +636,8 @@ export default function App(): JSX.Element {
               <>
                 <p style={{ color: 'var(--text)', fontWeight: 600 }}>{focusTask.title}</p>
                 <p>
-                  {formatRemainingCompact(focusTask.dueAt)} · {formatDateTime(focusTask.dueAt)}
+                  {formatRemainingCompact(focusTask.dueAt)} ·{' '}
+                  {isDueAtUnknown(focusTask.dueAt) ? '待确认' : formatDateTime(focusTask.dueAt)}
                 </p>
                 <button
                   type="button"

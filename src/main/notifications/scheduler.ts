@@ -1,4 +1,5 @@
 import { REMINDER_PRESETS } from '@shared/constants'
+import { isDueAtUnknown } from '@shared/domain'
 import type { ReminderFiredEvent, Task } from '@shared/types'
 import type { StudyNextStore } from '../storage/store'
 
@@ -55,6 +56,7 @@ export function findDueReminderCandidates(
   const nowMs = now.getTime()
   for (const task of tasks) {
     if (task.status !== 'todo') continue
+    if (isDueAtUnknown(task.dueAt)) continue
     const dueMs = Date.parse(task.dueAt)
     if (!Number.isFinite(dueMs) || dueMs <= nowMs) continue
     for (const rule of task.reminders) {
@@ -80,6 +82,7 @@ export function findNextReminderAt(tasks: Task[], now = new Date()): string | nu
   let next: number | null = null
   for (const task of tasks) {
     if (task.status !== 'todo') continue
+    if (isDueAtUnknown(task.dueAt)) continue
     const dueMs = Date.parse(task.dueAt)
     if (!Number.isFinite(dueMs) || dueMs <= now.getTime()) continue
     for (const rule of task.reminders) {

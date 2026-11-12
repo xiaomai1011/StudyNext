@@ -3,8 +3,8 @@
 - 版本：0.4.0 研究基线
 - 调研日期：2026-11-12
 - 项目：StudyNext
-- 结论等级：研究结论，不等于接口授权，也不等于已完成接入
-- 相关文档：`docs/CHAOXING_ACCESS_MATRIX.md`、`docs/V0.4.0_GO_NO_GO.md`
+- 结论等级：研究结论 + 本轮 Web Session 只读实现记录；不等于平台授权，也不等于官方 API 接入
+- 相关文档：`docs/CHAOXING_ACCESS_MATRIX.md`、`docs/CHAOXING_REPO_REVIEW.md`、`docs/V0.4.0_GO_NO_GO.md`
 
 ## 1. 结论摘要
 
@@ -12,8 +12,11 @@
 2. `open.chaoxing.com` 与 `open.fanya.chaoxing.com` 目前不能作为公开开发者文档站点使用；前者最终跳转到登录页，后者落到“不存在”的机构页面。
 3. 登录页出现的 `auth.chaoxing.com/connect/oauth2/authorize` 是登录联盟/第三方登录链路的一部分，不能据此推断存在课程数据授权 API。
 4. 学校机构授权在现实中可能存在，但必须通过超星或学校的正式合作、应用登记、接口文档、测试账号和数据协议确认。公开网页无法证明某所学校已经获得这些权限。
-5. 因此 v0.4.0 不启动未经授权的实时适配器。当前可交付的真实数据路径仍是用户主动导入的 JSON 学习快照、CSV、ICS，以及隔离的官方页面视图。
-6. `xuexitong-cli`（MIT）具有很高的数据模型参考价值，但它依赖网页登录 Cookie、隐藏表单字段和 HTML 解析，不能被视为官方 API，也不能直接复制进产品。
+5. v0.4.0 采用双路线，并在 UI 与文档中明确区分：
+   - **官方 API 授权路线**：仍未获得公开可核验的 OAuth/机构接口，不假设其存在，也不把它作为本轮前置条件。
+   - **用户身份认证路线（本轮实现）**：用户本人在隔离 Portal 中正常登录学习通，主进程复用同一 `persist:studynext-portal` 持久会话，发起低频、只读请求。已实现登录状态检查、个人资料健康检查、课程列表、作业列表、截止时间、作业状态与提交状态文本；考试、课表、章节、学习点、通知、资料仍未实现。
+6. 该路线不绕过验证码、MFA、风控、反爬或限流；账号密码默认不进入应用。用户可选启用“记住账号密码”，由 Windows DPAPI 加密保存在本机，仅注入官方 passport 登录页做自动填充，不自动提交、不上传；Cookie/Token 不落业务数据库、不进入 renderer、不写日志。它仍然依赖网页接口与 HTML 结构，属于“用户知情后使用的兼容层”，不能宣传为官方稳定 API。
+7. `xuexitong-cli`（MIT）具有很高的数据模型参考价值，但它依赖网页登录 Cookie、隐藏表单字段和 HTML 解析，不能被视为官方 API。本轮只参考其协议与解析逻辑，不复用其账号密码登录与明文 Cookie 存储。
 
 ## 2. 调研方法与证据边界
 
@@ -153,7 +156,7 @@ StudyNext 当前已经具备：
 - 网页登录会接触用户密码和 Cookie，安全责任高。
 - HTML/隐藏字段解析很脆弱，服务端改版就会失效。
 - 频繁轮询可能触发风控；项目自己也建议温和频率。
-- MIT 许可证允许复用代码，但本项目决定不复制，以避免把未授权网页接口固化为产品依赖。
+- MIT 许可证允许复用代码，但本项目不复制其源文件；本轮以独立实现提供“用户本人会话只读兼容层”，并在文档与 UI 中明确它依赖可能变化的网页结构，不是官方 API。
 
 ### 6.4 技术价值与风险结论
 
@@ -171,30 +174,108 @@ StudyNext 当前已经具备：
 - 无法提供稳定的 SLA、限流承诺或数据授权证明。
 - 不能把它的成功调用当作 StudyNext 可以上线实时同步的依据。
 
-## 7. 对 StudyNext 的接入建议
+## 7. StudyNext 的接入路线与实现边界
 
-### 7.1 立即可做
+### 7.1 两条路线必须分开命名
 
-- 继续完善 JSON 快照的字段覆盖、差异预览、冲突解释和同步历史。
-- 保持 `source='import'` 与实时 `source='chaoxing'` 严格区分。
-- 在同步中心展示“官方授权未配置”，而不是显示成功。
-- 把 Provider 能力声明做成静态矩阵，所有 `official` 能力初始为 false。
-- 把 Windows 通知做成独立 PoC，不替换现有进程内 `NotificationScheduler`。
+| 路线           | 含义                                                         | 本轮状态                       |
+| -------------- | ------------------------------------------------------------ | ------------------------------ |
+| 官方 API 授权  | OAuth、机构合作、官方接口、书面 scope 与限流承诺              | 未获证实，不假设存在           |
+| 用户身份认证   | 用户本人登录学习通，复用其真实 Web 会话读取自己的课程数据     | 已实现 Phase 1–3 的只读部分    |
 
-### 7.2 只有拿到授权后做
+`authState='authenticated'` 只表示“用当前会话访问受保护资源成功”，不表示 OAuth 授权成功。UI 必须显示“连接方式：Web Session”，不能显示“官方授权已连接”。
 
-- 实现真正的 `ChaoxingProvider`，由授权服务提供 OAuth/Token 交换或机构接口。
-- 在 main 进程保存加密 Token，renderer 永远不接触 Token。
-- 按资源分页、按游标增量同步，保存每次同步的资源和错误。
-- 与现有 `Task.manualFields`、`fieldSources`、`TaskChange` 和 `notification_deliveries` 对接。
-- 通过真实测试学校账号完成登录状态、过期、撤销、限流、断网和部分成功回归。
+### 7.2 本轮已实现：Portal Web Session 只读
 
-### 7.3 明确不做
+实现位置：
 
-- 不调用未获授权的私有接口。
-- 不实现验证码绕过、反爬规避、自动刷课、伪造学习记录、自动考试答题或代交作业。
+- `src/main/integrations/chaoxing/parsers.ts`：登录态、个人资料、课程列表、作业列表/详情、隐藏域、截止时间解析。
+- `src/main/integrations/chaoxing/session-client.ts`：`PortalSessionHttpClient`，优先 `session.fetch`（`credentials:'include'`），失败回退 `net.request({session, useSessionCookies:true})`；请求前做 URL 白名单校验，只统计 Cookie 域数量，不读取值。
+- `src/main/integrations/chaoxing/adapter.ts`：`ChaoxingSessionAdapter.checkSession()` 与 `pull()`；课程间 120ms 间隔，单课失败隔离。
+- `src/main/integrations/chaoxing/service.ts`：`ChaoxingSessionService`，串行锁、状态机、落库与状态持久化。
+- `src/main/ipc.ts` / `src/preload/index.ts`：`chaoxing:status`、`chaoxing:check`、`chaoxing:sync` 三个通道。
+- `src/renderer/src/pages/Settings.tsx`：连接状态卡、最近检查/同步、课程/作业计数、手动按钮。
+
+数据流：
+
+```text
+用户在 Portal 手动登录
+  -> 主进程 session.fromPartition('persist:studynext-portal')
+  -> GET https://i.chaoxing.com/base（受保护页面，验证登录态）
+  -> 解析个人资料 + 课程列表（courseId + clazzId + cpi）
+  -> 逐课 GET 课程页，读取隐藏域 enc / openc / workEnc
+  -> GET mooc2/work/list（带课程上下文与 Referer）
+  -> 解析作业列表；对未完成作业 GET 详情，解析截止时间
+  -> Provider -> Normalizer -> SyncService -> SQLite（source='chaoxing'）
+```
+
+已实现的归一字段：
+
+- 课程：`courseId`、`clazzId`、`cpi`、`courseName`、`teacher`、`courseUrl`；外部键 `courseId:clazzId`，同一课程不同教学班不会互相覆盖。
+- 作业：`externalId`（课程键 + workId/标题哈希）、`title`、`courseExternalId`、`dueAt`、`platformStatus`、`platformStatusKind`、详情 URL。
+- 截止时间解析失败时保留任务，`dueAt` 使用哨兵 `2099-12-31T15:59:59.000Z`，UI 显示“截止时间待确认”，日历与提醒跳过该任务；未知状态保持 `unknown`，不强制标为未提交。
+
+认证状态机：
+
+| 状态            | 触发条件                                                     |
+| --------------- | ------------------------------------------------------------ |
+| `unknown`       | 尚未检查，或网络/解析异常无法判定                             |
+| `logged_out`    | `/base` 被重定向到 passport2，或页面出现登录表单              |
+| `authenticated` | `/base` 返回个人空间结构（账号 aria-label、个人资料字段）     |
+| `expired`       | 上次为 `authenticated`，本次检查变为登出                      |
+
+同步状态仍复用 `not_configured / syncing / success / partial / failure`；`partial` 表示部分课程或部分作业详情失败，已成功的部分照常落库。
+
+### 7.3 Electron 会话复用的验证结论
+
+- `session.fromPartition('persist:studynext-portal')` 与 Portal 的 `WebContentsView` 使用同一持久分区，主进程可以取得同一份 Cookie 存储。
+- `session.fetch` 必须显式 `credentials:'include'`；不能假设默认行为一定带 Cookie。
+- `net.request` 作为兜底，关键是同时传 `session` 与 `useSessionCookies: true`；只传 `session` 不保证带上 Cookie。
+- 不同 `chaoxing.com` 子域的 Cookie 作用域由 Chromium 管理，主进程不手工拼 Cookie，也不把 Cookie 复制到 `defaultSession`。
+- 代码路径与模拟测试已通过；**真实账号登录态验证必须由用户本人执行**，本轮不宣称真实接入已成功。
+
+### 7.4 尚未实现的能力
+
+按顺序后续实现，每项单独解析、测试、更新能力矩阵：
+
+1. 课表（`kb.chaoxing.com/pc/curriculum/getMyLessons`）。
+2. 考试列表（`mooc1-api.chaoxing.com/exam-ans/exam/test/examcode/examlist`）。
+3. 章节目录（`mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse`）。
+4. 学习点与进度（章节树 + 任务点计数）。
+5. 通知（`notice.chaoxing.com/pc/notice/getNoticeList`）。
+6. 资料列表（`.../coursedata/stu-datalist`）。
+
+### 7.5 真实账号验证步骤（PoC 手册）
+
+本轮没有可用的真实学生账号，以下步骤必须由用户本人在本机执行，结果记入验收记录：
+
+1. 启动应用（开发模式 `npm run dev`，或使用已构建版本），进入“学习通”页面。
+2. 在隔离 Portal 中打开 `https://i.chaoxing.com/base`，由用户本人完成账号登录、验证码或 MFA；应用不接触密码。
+3. 确认 Portal 显示个人空间后，回到“设置 → 学习通与同步”，点击“检查登录状态”。
+4. 预期结果：
+   - 状态显示“已登录（Web Session）”；
+   - 连接方式显示 Web Session，传输方式显示 `session.fetch`（失败回退时显示 `net.request`）；
+   - 显示非敏感昵称/学校，最近检查时间更新；
+   - 若显示“未登录”或“登录已过期”，重新在 Portal 登录后再检查。
+5. 点击“仅同步学习通”，观察进度与结果：
+   - 成功时显示已同步课程数、作业数、最近同步时间；
+   - 部分失败时显示 `partial` 与错误摘要，已成功数据仍落库；
+   - 出现“需要安全验证”时立即停止，由用户在 Portal 手动处理，不重复请求。
+6. 在“任务”页确认作业标题、课程归属、截止时间；未知截止显示“截止时间待确认”，不进入日历和提醒。
+7. 在任务详情点击“打开学习通原页”，确认作业详情 URL 已完整落库并可打开。
+8. 找到平台显示“已发布”的作业，确认本地完成状态保持未知/未完成，不得显示“已完成”。
+9. 验收记录至少包含：日期、登录状态、课程数、作业数、`partial` 错误、传输方式、应用版本。**不要记录 Cookie、Token、完整请求 URL 或账号密码。**
+
+逐项验收表见 `docs/CHAOXING_PHASE3_ACCEPTANCE.md`。真实账号验证通过前，所有“已实现”结论仅代表代码完成 + 模拟测试通过。
+
+### 7.6 明确不做
+
+- 不实现验证码绕过、MFA 绕过、反爬规避、自动重登录。
+- 不实现提交作业、自动答题、签到、刷课、伪造学习记录、考试作答。
 - 不把官方页面打开成功标记为数据同步成功。
 - 不把模拟通知、演示课程或导入快照写成“已连接学习通”。
+- 不做任意 URL 抓取工具；所有请求只允许白名单学习通域名与已验证只读路径。
+- 不在高频轮询下运行；第一阶段只提供用户手动触发的同步。
 
 ## 8. 待向超星/学校确认的问题清单
 
@@ -230,6 +311,7 @@ curl.exe -sS -L --max-time 30 -o NUL -w "%{http_code}|%{url_effective}|%{content
 
 ## 10. 变更记录
 
-| 日期       | 变更                                                                             |
-| ---------- | -------------------------------------------------------------------------------- |
-| 2026-11-12 | 建立 v0.4.0 真实接入研究基线；记录官方入口探测、xuexitong-cli 只读审查和接入门槛 |
+| 日期       | 变更                                                                                                                         |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 2026-11-12 | 建立 v0.4.0 真实接入研究基线；记录官方入口探测、xuexitong-cli 只读审查和接入门槛                                             |
+| 2026-11-12 | 修订为双路线：保留官方 API 授权结论，新增“用户本人 Web Session 只读”实现记录、认证状态机、已实现字段与未实现能力清单          |

@@ -15,6 +15,29 @@ export function isAllowedPortalUrl(rawUrl: string): boolean {
   }
 }
 
+/**
+ * Some Chaoxing entry pages still redirect from https to http (for example
+ * https://i.chaoxing.com/ -> http://i.chaoxing.com/base). The isolated view only
+ * accepts HTTPS, so upgrade the same host/path instead of blocking the login
+ * flow. Returns null when the URL is not a Chaoxing host or already HTTPS.
+ */
+export function upgradePortalHttpUrl(rawUrl: string): string | null {
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== 'http:') return null
+    if (url.username || url.password) return null
+    const hostname = url.hostname.toLocaleLowerCase()
+    const allowed = ALLOWED_PORTAL_HOSTS.some(
+      (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
+    )
+    if (!allowed) return null
+    url.protocol = 'https:'
+    return url.toString()
+  } catch {
+    return null
+  }
+}
+
 export function isTrustedSsoUrl(rawUrl: string, trustedDomains: readonly string[]): boolean {
   if (trustedDomains.length === 0) return false
   try {

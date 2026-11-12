@@ -16,6 +16,7 @@ import {
 } from 'date-fns'
 import { CalendarDays, ChevronLeft, ChevronRight, Clock3, MapPin } from 'lucide-react'
 import type { Course, CourseSession, Task } from '@shared/types'
+import { dedupeCourseSessions, dueBucket, isDueAtUnknown, semesterWeekOf, weekInSchedule } from '@shared/domain'
 import { formatTime } from '../lib/format'
 
 interface CalendarProps {
@@ -51,9 +52,19 @@ export function Calendar({ tasks, courses, weekStartsOn, onOpenTask }: CalendarP
   const [selectedDate, setSelectedDate] = useState(() => new Date())
 
   const courseById = useMemo(() => new Map(courses.map((course) => [course.id, course])), [courses])
+  const semesterStart = courses[0]?.semesterStart ?? null
+  const maxWeek = courses[0]?.maxWeek ?? 0
+  const sessionActive = (session: CourseSession, date: Date): boolean => {
+    const week = semesterWeekOf(date, semesterStart)
+    if (week === null) return true
+    if (maxWeek > 0 && (week < 1 || week > maxWeek)) return false
+    return weekInSchedule(session.weeks, week)
+  }
   const tasksByDay = useMemo(() => {
     const map = new Map<string, Task[]>()
     for (const task of tasks) {
+      if (task.status === 'todo' && dueBucket(task, new Date()) === 'overdue') continue
+      if (isDueAtUnknown(task.dueAt)) continue
       const due = new Date(task.dueAt)
       if (!Number.isFinite(due.getTime())) continue
       const key = dateKey(due)
@@ -93,13 +104,13 @@ export function Calendar({ tasks, courses, weekStartsOn, onOpenTask }: CalendarP
     return new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()
   })
   const selectedWeekday = selectedDate.getDay() === 0 ? 7 : selectedDate.getDay()
-  const selectedSessions = courses
-    .flatMap((course) =>
+  const selectedSessions = dedupeCourseSessions(
+    courses.flatMap((course) =>
       course.schedule
-        .filter((session) => session.weekday === selectedWeekday)
+        .filter((session) => session.weekday === selectedWeekday && sessionActive(session, selectedDate))
         .map((session) => ({ course, session }))
     )
-    .sort((a, b) => a.session.startTime.localeCompare(b.session.startTime))
+  ).sort((a, b) => a.session.startTime.localeCompare(b.session.startTime))
 
   const title =
     view === 'month'
@@ -138,10 +149,16 @@ export function Calendar({ tasks, courses, weekStartsOn, onOpenTask }: CalendarP
         {monthDays.map((day) => {
           const key = dateKey(day)
           const dayTasks = tasksByDay.get(key) ?? []
-          const sessions = courses.flatMap((course) =>
-            course.schedule
-              .filter((session) => session.weekday === (day.getDay() === 0 ? 7 : day.getDay()))
-              .map((session) => ({ course, session }))
+          const sessions = dedupeCourseSessions(
+            courses.flatMap((course) =>
+              course.schedule
+                .filter(
+                  (session) =>
+                    session.weekday === (day.getDay() === 0 ? 7 : day.getDay()) &&
+                    sessionActive(session, day)
+                )
+                .map((session) => ({ course, session }))
+            )
           )
           return (
             <div
@@ -230,10 +247,12 @@ export function Calendar({ tasks, courses, weekStartsOn, onOpenTask }: CalendarP
 
       {weekDays.map((day) => {
         const weekday = day.getDay() === 0 ? 7 : day.getDay()
-        const sessions = courses.flatMap((course) =>
-          course.schedule
-            .filter((session) => session.weekday === weekday)
-            .map((session) => ({ course, session }))
+        const sessions = dedupeCourseSessions(
+          courses.flatMap((course) =>
+            course.schedule
+              .filter((session) => session.weekday === weekday && sessionActive(session, day))
+              .map((session) => ({ course, session }))
+          )
         )
         const dayTasks = tasksByDay.get(dateKey(day)) ?? []
         return (
@@ -429,7 +448,7 @@ export function Calendar({ tasks, courses, weekStartsOn, onOpenTask }: CalendarP
               lineHeight: 1.6
             }}
           >
-            课程按演示课表的每周时间重复展示，暂不处理单双周与调休。
+            课程按学习通课表的周次显示；单双周按 weeks 字段过滤，调休以平台课表为准。
           </div>
         </aside>
       </div>

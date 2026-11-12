@@ -17,6 +17,7 @@ import type {
   DataSource,
   OfficialEntry,
   OfficialEntryInput,
+  PlatformStatusKind,
   QuestionCard,
   QuestionInput,
   QuestionSource,
@@ -45,6 +46,8 @@ interface CourseRow {
   color: string
   favorite: number
   schedule_json: string
+  semester_start: string | null
+  max_week: number
   source: string
   source_url: string | null
   created_at: string
@@ -65,6 +68,9 @@ interface TaskRow {
   source: string
   external_id: string | null
   source_updated_at: string | null
+  source_url: string | null
+  platform_status: string | null
+  platform_status_kind: string
   manual_fields_json: string
   field_sources_json: string
   created_at: string
@@ -158,6 +164,8 @@ CREATE TABLE IF NOT EXISTS courses (
   color TEXT NOT NULL,
   favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0, 1)),
   schedule_json TEXT NOT NULL DEFAULT '[]',
+  semester_start TEXT,
+  max_week INTEGER NOT NULL DEFAULT 0,
   source TEXT NOT NULL DEFAULT 'manual',
   source_url TEXT,
   created_at TEXT NOT NULL,
@@ -229,6 +237,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   source TEXT NOT NULL DEFAULT 'manual',
   external_id TEXT,
   source_updated_at TEXT,
+  source_url TEXT,
+  platform_status TEXT,
+  platform_status_kind TEXT NOT NULL DEFAULT 'unknown',
   manual_fields_json TEXT NOT NULL DEFAULT '[]',
   field_sources_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
@@ -578,6 +589,13 @@ export class StudyNextStore {
     if (!columns.some((column) => column.name === 'external_id')) {
       this.db.exec('ALTER TABLE courses ADD COLUMN external_id TEXT')
     }
+    const addCourseColumn = (name: string, definition: string): void => {
+      if (!columns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE courses ADD COLUMN ${name} ${definition}`)
+      }
+    }
+    addCourseColumn('semester_start', 'TEXT')
+    addCourseColumn('max_week', 'INTEGER NOT NULL DEFAULT 0')
     const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all() as unknown as Array<{
       name: string
     }>
@@ -588,6 +606,9 @@ export class StudyNextStore {
     }
     addTaskColumn('completion_source', 'TEXT')
     addTaskColumn('source_updated_at', 'TEXT')
+    addTaskColumn('source_url', 'TEXT')
+    addTaskColumn('platform_status', 'TEXT')
+    addTaskColumn('platform_status_kind', "TEXT NOT NULL DEFAULT 'unknown'")
     addTaskColumn('manual_fields_json', "TEXT NOT NULL DEFAULT '[]'")
     addTaskColumn('field_sources_json', "TEXT NOT NULL DEFAULT '{}'")
     this.db.exec(`
@@ -640,6 +661,14 @@ export class StudyNextStore {
         entry.sortOrder,
         entry.isBuiltin ? 1 : 0
       )
+    }
+    const updateBuiltinUrl = this.db.prepare(
+      'UPDATE official_entries SET url = ? WHERE id = ? AND is_builtin = 1'
+    )
+    for (const entry of BUILTIN_ENTRIES) {
+      // Built-in URLs can be corrected between releases; user-created entries
+      // and per-entry enabled flags are never touched here.
+      updateBuiltinUrl.run(entry.url, entry.id)
     }
     this.setMetaIfMissing('schema_version', '3')
     if (this.getMeta('schema_version') === '1' || this.getMeta('schema_version') === '2') {
@@ -797,6 +826,38 @@ export class StudyNextStore {
         rows.map((row) => row.id),
         new Date().toISOString()
       )
+    })
+  }
+
+  /**
+   * 真实学习通数据第一次同步成功后，演示数据会与真实课程/作业混在一起，
+   * 让用户误以为同步没有生效。这里只清理 source='demo' 的种子数据，
+   * 手动录入、导入与学习通数据都保留。
+   */
+  clearDemoData(): { courses: number; tasks: number } {
+    return this.transaction(() => {
+      const demoTaskIds = (
+        this.db.prepare("SELECT id FROM tasks WHERE source = 'demo'").all() as unknown as Array<{
+          id: string
+        }>
+      ).map((row) => row.id)
+      const demoCourseIds = (
+        this.db.prepare("SELECT id FROM courses WHERE source = 'demo'").all() as unknown as Array<{
+          id: string
+        }>
+      ).map((row) => row.id)
+      for (const taskId of demoTaskIds) {
+        this.db.prepare('DELETE FROM task_reminders WHERE task_id = ?').run(taskId)
+        this.db.prepare('DELETE FROM notification_deliveries WHERE task_id = ?').run(taskId)
+        this.db.prepare('DELETE FROM task_change_log WHERE task_id = ?').run(taskId)
+      }
+      for (const courseId of demoCourseIds) {
+        this.db.prepare('DELETE FROM study_points WHERE course_id = ?').run(courseId)
+        this.db.prepare('DELETE FROM course_chapters WHERE course_id = ?').run(courseId)
+      }
+      this.db.prepare("DELETE FROM tasks WHERE source = 'demo'").run()
+      this.db.prepare("DELETE FROM courses WHERE source = 'demo'").run()
+      return { courses: demoCourseIds.length, tasks: demoTaskIds.length }
     })
   }
 
@@ -966,6 +1027,80 @@ export class StudyNextStore {
         input.category.trim() || '学习通',
         color,
         JSON.stringify(input.schedule),
+        input.sourceUrl,
+        now,
+        now
+      )
+    const course = this.getCourse(id)
+    if (!course) throw new UserFacingError('COURSE_CREATE_FAILED', '课程创建失败')
+    return { course, created: true }
+  }
+
+  /**
+   * 平台会话同步专用：按 (source, externalId) 去重写入课程。
+   * 只更新平台可提供的字段，保留用户改过的收藏、颜色、分类与本地课表。
+   */
+  upsertProviderCourse(
+    input: {
+      externalId: string
+      name: string
+      teacher: string
+      semester?: string
+      sourceUrl: string | null
+      schedule?: CourseSession[]
+      semesterStart?: string | null
+      maxWeek?: number
+    },
+    source: DataSource = 'chaoxing'
+  ): { course: Course; created: boolean } {
+    const existing = this.findCourseByExternalId(source, input.externalId)
+    const now = new Date().toISOString()
+    if (existing) {
+      const scheduleJson = input.schedule ? JSON.stringify(input.schedule) : existing.schedule
+      const scheduleValue = typeof scheduleJson === 'string' ? scheduleJson : JSON.stringify(scheduleJson)
+      this.db
+        .prepare(
+          `UPDATE courses SET name = ?, teacher = ?, semester = ?, source_url = ?,
+             schedule_json = ?, semester_start = ?, max_week = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          input.name.trim() || existing.name,
+          input.teacher.trim() || existing.teacher,
+          input.semester?.trim() || existing.semester,
+          input.sourceUrl,
+          scheduleValue,
+          input.semesterStart !== undefined ? input.semesterStart : (existing.semesterStart ?? null),
+          input.maxWeek !== undefined ? input.maxWeek : (existing.maxWeek ?? 0),
+          now,
+          existing.id
+        )
+      const course = this.getCourse(existing.id)
+      if (!course) throw new UserFacingError('COURSE_UPDATE_FAILED', '课程更新失败')
+      return { course, created: false }
+    }
+    const id = randomUUID()
+    const color =
+      COURSE_COLORS[Math.floor(Math.random() * COURSE_COLORS.length)] ?? COURSE_COLORS[0]
+    this.db
+      .prepare(
+        `INSERT INTO courses
+          (id, external_id, name, code, teacher, semester, category, color, favorite,
+           schedule_json, semester_start, max_week, source, source_url, created_at, updated_at)
+         VALUES (?, ?, ?, '', ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.externalId,
+        input.name.trim() || '未命名课程',
+        input.teacher.trim(),
+        input.semester?.trim() || currentSemesterLabel(),
+        '学习通',
+        color,
+        JSON.stringify(input.schedule ?? []),
+        input.semesterStart ?? null,
+        input.maxWeek ?? 0,
+        source,
         input.sourceUrl,
         now,
         now
@@ -1263,6 +1398,8 @@ export class StudyNextStore {
       externalId?: string | null
       sourceUpdatedAt?: string | null
       completionSource?: TaskCompletionSource | null
+      platformStatus?: string | null
+      platformStatusKind?: PlatformStatusKind
       fieldSources?: Partial<Record<TaskField, DataSource>>
       manualFields?: TaskField[]
     } = {}
@@ -1285,9 +1422,9 @@ export class StudyNextStore {
           `
           INSERT INTO tasks
             (id, title, description, course_id, priority, kind, status, due_at, completed_at,
-             completion_source, source, external_id, source_updated_at, manual_fields_json,
-             field_sources_json, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             completion_source, source, external_id, source_updated_at, source_url, platform_status,
+             platform_status_kind, manual_fields_json, field_sources_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         )
         .run(
@@ -1304,6 +1441,9 @@ export class StudyNextStore {
           source,
           externalId,
           options.sourceUpdatedAt ?? (source === 'import' ? now : null),
+          input.sourceUrl ?? null,
+          options.platformStatus ?? null,
+          options.platformStatusKind ?? 'unknown',
           JSON.stringify(manualFields),
           JSON.stringify(fieldSources),
           now,
@@ -1409,7 +1549,13 @@ export class StudyNextStore {
 
   upsertImportedTask(
     input: TaskUpsertInput,
-    options: { externalId: string; source?: DataSource; sourceUpdatedAt?: string | null }
+    options: {
+      externalId: string
+      source?: DataSource
+      sourceUpdatedAt?: string | null
+      platformStatus?: string | null
+      platformStatusKind?: PlatformStatusKind
+    }
   ): ImportedTaskUpsertResult {
     const source = options.source ?? 'import'
     const existing = this.findTaskByExternalId(source, options.externalId)
@@ -1420,6 +1566,12 @@ export class StudyNextStore {
           externalId: options.externalId,
           ...(options.sourceUpdatedAt !== undefined
             ? { sourceUpdatedAt: options.sourceUpdatedAt }
+            : {}),
+          ...(options.platformStatus !== undefined
+            ? { platformStatus: options.platformStatus }
+            : {}),
+          ...(options.platformStatusKind !== undefined
+            ? { platformStatusKind: options.platformStatusKind }
             : {}),
           fieldSources: fieldSourcesFor(source),
           completionSource: (input.status ?? 'todo') === 'done' ? 'platform' : null
@@ -1460,9 +1612,24 @@ export class StudyNextStore {
       fieldSources[field] = source
     }
     if (changes.length === 0) {
+      const platformChanged =
+        options.platformStatus !== undefined && options.platformStatus !== existing.platformStatus
       this.db
-        .prepare('UPDATE tasks SET source_updated_at = ? WHERE id = ?')
-        .run(options.sourceUpdatedAt ?? new Date().toISOString(), existing.id)
+        .prepare(
+          `UPDATE tasks SET source_updated_at = ?, source_url = ?, platform_status = ?,
+             platform_status_kind = ?
+           WHERE id = ?`
+        )
+        .run(
+          options.sourceUpdatedAt ?? new Date().toISOString(),
+          input.sourceUrl !== undefined ? input.sourceUrl : existing.sourceUrl,
+          options.platformStatus !== undefined ? options.platformStatus : existing.platformStatus,
+          options.platformStatusKind ?? existing.platformStatusKind,
+          existing.id
+        )
+      if (platformChanged) {
+        this.recordTaskChange(existing.id, source, '平台状态更新', [])
+      }
       return {
         task: this.getTask(existing.id) ?? existing,
         action: 'unchanged',
@@ -1487,7 +1654,8 @@ export class StudyNextStore {
           UPDATE tasks SET
             title = ?, description = ?, course_id = ?, priority = ?, kind = ?, status = ?,
             due_at = ?, completed_at = ?, completion_source = ?, source_updated_at = ?,
-            field_sources_json = ?, updated_at = ?
+            source_url = ?, platform_status = ?, platform_status_kind = ?, field_sources_json = ?,
+            updated_at = ?
           WHERE id = ?
         `
         )
@@ -1502,6 +1670,9 @@ export class StudyNextStore {
           effectiveStatus === 'done' ? (existing.completedAt ?? now) : null,
           completionSource,
           options.sourceUpdatedAt ?? now,
+          input.sourceUrl !== undefined ? input.sourceUrl : existing.sourceUrl,
+          options.platformStatus !== undefined ? options.platformStatus : existing.platformStatus,
+          options.platformStatusKind ?? existing.platformStatusKind,
           JSON.stringify(fieldSources),
           now,
           existing.id
@@ -1801,6 +1972,8 @@ function mapCourseRow(row: CourseRow): Course {
     color: row.color,
     favorite: row.favorite === 1,
     schedule,
+    semesterStart: row.semester_start,
+    maxWeek: row.max_week,
     source: row.source as DataSource,
     sourceUrl: row.source_url,
     createdAt: row.created_at,
@@ -1891,6 +2064,9 @@ function mapTaskRow(row: TaskRow, reminders: ReminderRule[]): Task {
     source: row.source as DataSource,
     externalId: row.external_id,
     sourceUpdatedAt: row.source_updated_at,
+    sourceUrl: row.source_url ?? null,
+    platformStatus: row.platform_status ?? null,
+    platformStatusKind: (row.platform_status_kind as PlatformStatusKind) ?? 'unknown',
     manualFields: parseTaskFields(row.manual_fields_json),
     fieldSources: parseTaskFieldSources(row.field_sources_json),
     createdAt: row.created_at,

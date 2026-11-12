@@ -9,8 +9,10 @@ import {
   buildPortalWebPreferences,
   isAllowedPortalUrl,
   isPortalNavigationAllowed,
-  safeDisplayUrl
+  safeDisplayUrl,
+  upgradePortalHttpUrl
 } from './security'
+import { buildCredentialFillScript, isChaoxingLoginUrl } from './autofill'
 
 interface Rect {
   x: number
@@ -42,7 +44,8 @@ export class PortalService {
 
   constructor(
     private readonly store: StudyNextStore,
-    private readonly getWindow: () => BrowserWindow | null
+    private readonly getWindow: () => BrowserWindow | null,
+    private readonly getCredentials?: () => Promise<{ username: string; password: string } | null>
   ) {}
 
   getState(): PortalState {
@@ -139,6 +142,160 @@ export class PortalService {
     this.view?.webContents.reload()
   }
 
+  /**
+   * Fills the official passport form with the locally encrypted account. It
+   * never submits the form: the user still reviews and clicks the login button,
+   * and any captcha / MFA challenge stays with the user.
+   */
+  async fillCredentials(): Promise<boolean> {
+    const contents = this.view?.webContents
+    if (!contents || contents.isDestroyed()) return false
+    if (!isChaoxingLoginUrl(contents.getURL())) return false
+    const credentials = await this.getCredentials?.()
+    if (!credentials) return false
+    const script = buildCredentialFillScript(credentials.username, credentials.password)
+    const mainFrame = contents.mainFrame
+    const frames = [mainFrame, ...mainFrame.framesInSubtree.filter((frame) => frame !== mainFrame)]
+    for (const frame of frames) {
+      try {
+        if ((await frame.executeJavaScript(script, true)) === true) return true
+      } catch {
+        // Try the next frame; the login form may live in a nested frame.
+      }
+    }
+    return false
+  }
+
+  /**
+   * Reads the course grid from the Portal's own frames. The personal-space
+   * page builds the iframe src in JavaScript, and the isolated HTTP client can
+   * be blocked by Chromium for that cross-subdomain frame; the visible Portal
+   * frame already has the authenticated DOM, so use it as the read-only source.
+   */
+  async readCoursePageHtml(): Promise<string | null> {
+    const contents = this.view?.webContents
+    if (!contents || contents.isDestroyed()) return null
+    const mainFrame = contents.mainFrame
+    const frames = [mainFrame, ...mainFrame.framesInSubtree.filter((frame) => frame !== mainFrame)]
+    let best: string | null = null
+    let bestCount = 0
+    for (const frame of frames) {
+      try {
+        const count = (await frame.executeJavaScript(
+          '(document.body ? (document.body.innerHTML.match(/stucoursemiddle/g) || []).length : 0)',
+          true
+        )) as number
+        if (typeof count === 'number' && count > bestCount) {
+          const html = (await frame.executeJavaScript(
+            'document.documentElement.outerHTML',
+            true
+          )) as string
+          if (typeof html === 'string' && html.length > 0) {
+            best = html
+            bestCount = count
+          }
+        }
+      } catch {
+        // Frame may be detached or still loading; try the next one.
+      }
+    }
+    return best
+  }
+
+  /**
+   * 同步时 Portal 可能还没打开，或课程 iframe 仍在加载。这里按需打开个人空间，
+   * 轮询等待课程网格渲染完成；只读取 DOM，不注入任何脚本逻辑。
+   */
+  async ensureCoursePageHtml(): Promise<string | null> {
+    const existing = await this.readCoursePageHtml()
+    if (existing) return existing
+    if (!this.view) {
+      const entries = this.store.listOfficialEntries(false)
+      const home =
+        entries.find((entry) => entry.id === 'entry-home') ??
+        entries.find((entry) => entry.url.includes('i.chaoxing.com'))
+      if (!home) return null
+      try {
+        await this.open(home.id)
+      } catch {
+        return null
+      }
+    }
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500))
+      const html = await this.readCoursePageHtml()
+      if (html) return html
+    }
+    return null
+  }
+
+  /**
+   * 课表页与个人空间同属学习通登录态。HTTP 客户端请求 kb.chaoxing.com 会被
+   * Chromium 拦截（ERR_BLOCKED_BY_CLIENT），但课表页自身的同源 fetch 可用；
+   * 这里在课表页上下文内逐周拉取，返回不含 Cookie 的 JSON 字符串。
+   */
+  async readScheduleFromPage(): Promise<string | null> {
+    const entries = this.store.listOfficialEntries(false)
+    const calendar = entries.find((entry) => entry.id === 'entry-calendar')
+    if (!calendar) return null
+    const contents = this.view?.webContents
+    const alreadyOpen =
+      contents &&
+      !contents.isDestroyed() &&
+      contents.getURL().startsWith('https://kb.chaoxing.com/res/pc/curriculum/schedule.html')
+    if (!alreadyOpen) {
+      try {
+        await this.open(calendar.id)
+      } catch {
+        return null
+      }
+    }
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      const current = this.view?.webContents
+      if (!current || current.isDestroyed()) return null
+      if (current.getURL().startsWith('https://kb.chaoxing.com/res/pc/curriculum/schedule.html')) {
+        try {
+          const result = (await current.executeJavaScript(
+            `(async () => {
+              const post = async (body) => {
+                const response = await fetch('/pc/curriculum/getMyLessons', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8' },
+                  body,
+                  credentials: 'include'
+                })
+                return response.json()
+              }
+              const first = await post('')
+              const maxWeek = Math.min(Number(first && first.data && first.data.curriculum && first.data.curriculum.maxWeek) || 20, 30)
+              const weeks = []
+              for (let week = 1; week <= maxWeek; week += 1) {
+                try {
+                  const payload = await post('week=' + week)
+                  if (payload && payload.result === 1) {
+                    weeks.push({ week, lessons: (payload.data && payload.data.lessonArray) || [] })
+                  }
+                } catch {
+                  // 单周失败不阻断其他周；上层会按缺失周次提示。
+                }
+              }
+              return JSON.stringify({
+                curriculum: (first && first.data && first.data.curriculum) || {},
+                weeks
+              })
+            })()`,
+            true
+          )) as unknown
+          if (typeof result === 'string' && result.length > 0) return result
+        } catch {
+          // Page may still be loading; retry below.
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400))
+    }
+    return null
+  }
+
   async clearSession(): Promise<void> {
     const portalSession = session.fromPartition(PORTAL_PARTITION)
     await portalSession.clearStorageData()
@@ -172,6 +329,13 @@ export class PortalService {
 
   private attachSecurityHandlers(view: WebContentsView): void {
     const contents = view.webContents
+    const upgradeHttpNavigation = (url: string): boolean => {
+      const upgraded = upgradePortalHttpUrl(url)
+      if (!upgraded) return false
+      this.appendNavigation('open', upgraded, true, '学习通入口要求使用 HTTPS，已自动升级')
+      void contents.loadURL(upgraded)
+      return true
+    }
     const blockNavigation = (url: string): boolean => {
       if (this.isNavigationAllowed(url)) return false
       this.appendNavigation('blocked', url, false, '非学习通官方域名或未授权的校园 SSO 域名')
@@ -183,16 +347,28 @@ export class PortalService {
     }
 
     contents.on('will-navigate', (event, url) => {
+      if (upgradeHttpNavigation(url)) {
+        event.preventDefault()
+        return
+      }
       if (blockNavigation(url)) event.preventDefault()
     })
     contents.on('will-redirect', (event, url) => {
+      if (upgradeHttpNavigation(url)) {
+        event.preventDefault()
+        return
+      }
       if (blockNavigation(url)) event.preventDefault()
     })
     contents.on('will-attach-webview', (event) => {
       event.preventDefault()
     })
     contents.setWindowOpenHandler(({ url }) => {
-      if (this.isNavigationAllowed(url)) {
+      const upgraded = upgradePortalHttpUrl(url)
+      if (upgraded) {
+        this.appendNavigation('open', upgraded, true, '学习通入口要求使用 HTTPS，已自动升级')
+        void contents.loadURL(upgraded)
+      } else if (this.isNavigationAllowed(url)) {
         this.appendNavigation('open', url, true, null)
         void contents.loadURL(url)
       } else {
@@ -209,6 +385,9 @@ export class PortalService {
     })
     contents.on('did-stop-loading', () => {
       if (this.state.state === 'loading') this.updateState({ state: 'ready' })
+    })
+    contents.on('did-finish-load', () => {
+      if (this.getCredentials) void this.fillCredentials()
     })
     contents.on(
       'did-fail-load',

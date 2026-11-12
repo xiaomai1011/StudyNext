@@ -1,4 +1,5 @@
-import type { ReminderRule, Task, TaskKind, TaskPriority, TaskStatus } from './types'
+import type { Course, CourseSession, ReminderRule, Task, TaskKind, TaskPriority, TaskStatus } from './types'
+import { UNKNOWN_DUE_AT } from './constants'
 
 export interface TaskFilters {
   query?: string
@@ -10,8 +11,16 @@ export interface TaskFilters {
 
 export type DueBucket = 'overdue' | 'today' | 'soon' | 'upcoming' | 'done'
 
+const UNKNOWN_DUE_MS = Date.parse(UNKNOWN_DUE_AT)
+
+export function isDueAtUnknown(dueAt: string): boolean {
+  const due = Date.parse(dueAt)
+  return !Number.isFinite(due) || due >= UNKNOWN_DUE_MS
+}
+
 export function dueBucket(task: Task, now = new Date()): DueBucket {
   if (task.status === 'done') return 'done'
+  if (isDueAtUnknown(task.dueAt)) return 'upcoming'
   const due = new Date(task.dueAt).getTime()
   if (!Number.isFinite(due)) return 'upcoming'
   if (due < now.getTime()) return 'overdue'
@@ -45,6 +54,7 @@ export function minutesUntil(dueAt: string, now = new Date()): number {
 }
 
 export function formatRemainingCompact(dueAt: string, now = new Date()): string {
+  if (isDueAtUnknown(dueAt)) return '截止时间待确认'
   const diff = new Date(dueAt).getTime() - now.getTime()
   if (!Number.isFinite(diff)) return '时间待确认'
   if (diff < 0) {
@@ -115,7 +125,9 @@ export function computeTaskStats(tasks: Task[], now = new Date()): TaskStats {
     const due = new Date(task.dueAt).getTime()
     return due >= start.getTime() && due < todayEnd
   }).length
-  const overdue = openTasks.filter((task) => new Date(task.dueAt).getTime() < now.getTime()).length
+  const overdue = openTasks.filter(
+    (task) => !isDueAtUnknown(task.dueAt) && new Date(task.dueAt).getTime() < now.getTime()
+  ).length
   const dueThisWeek = openTasks.filter((task) => {
     const due = new Date(task.dueAt).getTime()
     return due >= now.getTime() && due < weekEnd
@@ -131,8 +143,54 @@ export function computeTaskStats(tasks: Task[], now = new Date()): TaskStats {
   }
 }
 
-export function normalizeReminderOffsets(offsets: number[]): number[] {
-  return [...new Set(offsets)]
+/** 判断课表周次串（"1-16"、"1,3,5-8"）是否包含某一周。空串视为每周。 */
+export function weekInSchedule(spec: string, week: number): boolean {
+  const text = spec.trim()
+  if (!text) return true
+  for (const part of text.split(',')) {
+    const token = part.trim()
+    if (!token) continue
+    const [fromText, toText] = token.split('-')
+    const from = Number(fromText)
+    const to = Number(toText ?? fromText)
+    if (!Number.isFinite(from) || !Number.isFinite(to)) continue
+    if (week >= from && week <= to) return true
+  }
+  return false
+}
+
+/** 以学期第 1 周周一（YYYY-MM-DD，北京时间）为锚点计算某天是第几周。 */
+export function semesterWeekOf(date: Date, semesterStart: string | null | undefined): number | null {
+  if (!semesterStart) return null
+  const start = new Date(`${semesterStart}T00:00:00+08:00`)
+  if (!Number.isFinite(start.getTime())) return null
+  const day = new Date(date)
+  day.setHours(0, 0, 0, 0)
+  return Math.floor((day.getTime() - start.getTime()) / 604_800_000) + 1
+}
+
+/** 同一课程可能对应多个教学班，课表节次完全相同时界面只展示一次。 */
+export function dedupeCourseSessions(
+  items: Array<{ course: Course; session: CourseSession }>
+): Array<{ course: Course; session: CourseSession }> {
+  const seen = new Set<string>()
+  const result: Array<{ course: Course; session: CourseSession }> = []
+  for (const item of items) {
+    const key = [
+      item.course.name,
+      item.session.weekday,
+      item.session.startTime,
+      item.session.endTime,
+      item.session.location
+    ].join('|')
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(item)
+  }
+  return result
+}
+
+export function normalizeReminderOffsets(offsets: number[]): number[] {  return [...new Set(offsets)]
     .filter((value) => Number.isFinite(value))
     .map((value) => Math.round(value))
     .filter((value) => value >= 5 && value <= 60 * 24 * 30)

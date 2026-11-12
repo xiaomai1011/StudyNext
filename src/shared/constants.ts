@@ -13,6 +13,12 @@ export const REMINDER_PRESETS = [
 export const REMINDER_MIN_MINUTES = 5
 export const REMINDER_MAX_MINUTES = 60 * 24 * 30
 
+/**
+ * 平台未给出可解析截止时间时使用的哨兵值。
+ * 必须与真实日期明显区分，UI 与提醒调度均需识别并显示“截止时间待确认”。
+ */
+export const UNKNOWN_DUE_AT = '2099-12-31T15:59:59.000Z'
+
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   closeToTray: true,
@@ -71,7 +77,7 @@ export const BUILTIN_ENTRIES = [
     id: 'entry-home',
     label: '学习通首页',
     description: '进入个人空间与课程总览',
-    url: 'https://i.chaoxing.com/',
+    url: 'https://i.chaoxing.com/base',
     kind: 'home' as const,
     enabled: true,
     sortOrder: 10,

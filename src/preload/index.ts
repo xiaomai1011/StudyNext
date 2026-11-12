@@ -7,6 +7,8 @@ import type {
   AiConfigInput,
   AppSettings,
   BootstrapData,
+  ChaoxingCredentialStatus,
+  ChaoxingSessionStatus,
   Course,
   ImportResult,
   OfficialEntry,
@@ -85,6 +87,21 @@ const api: StudyNextApi = {
   sync: {
     status: () => ipcRenderer.invoke(IPC.syncStatus) as Promise<SyncStatus>,
     run: () => ipcRenderer.invoke(IPC.syncRun) as Promise<SyncStatus>
+  },
+  chaoxing: {
+    status: () => ipcRenderer.invoke(IPC.chaoxingStatus) as Promise<ChaoxingSessionStatus>,
+    check: () => ipcRenderer.invoke(IPC.chaoxingCheck) as Promise<ChaoxingSessionStatus>,
+    sync: () => ipcRenderer.invoke(IPC.chaoxingSync) as Promise<ChaoxingSessionStatus>,
+    credentialsStatus: () =>
+      ipcRenderer.invoke(IPC.chaoxingCredentialsStatus) as Promise<ChaoxingCredentialStatus>,
+    saveCredentials: (input) =>
+      ipcRenderer.invoke(
+        IPC.chaoxingCredentialsSave,
+        input
+      ) as Promise<ChaoxingCredentialStatus>,
+    clearCredentials: () =>
+      ipcRenderer.invoke(IPC.chaoxingCredentialsClear) as Promise<ChaoxingCredentialStatus>,
+    fillCredentials: () => ipcRenderer.invoke(IPC.chaoxingCredentialsFill) as Promise<boolean>
   },
   portal: {
     open: (entryId: string) => ipcRenderer.invoke(IPC.portalOpen, entryId) as Promise<void>,

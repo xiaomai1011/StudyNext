@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   BellRing,
   BrainCircuit,
   Database,
   Download,
+  Eye,
+  EyeOff,
   FolderOpen,
   Globe2,
   Import,
@@ -14,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   Save,
+  ShieldCheck,
   Sun,
   Trash2,
   TriangleAlert
@@ -23,6 +26,8 @@ import type {
   AppInfo,
   AppSettings,
   BootstrapData,
+  ChaoxingCredentialStatus,
+  ChaoxingSessionStatus,
   ImportResult,
   OfficialEntry,
   OfficialEntryInput,
@@ -35,11 +40,12 @@ import { REMINDER_MAX_MINUTES, REMINDER_MIN_MINUTES, REMINDER_PRESETS } from '@s
 import { normalizeReminderOffsets } from '@shared/domain'
 import type { ToastKind } from '../components/ToastStack'
 import { ConfirmDialog } from '../components/ConfirmDialog'
-import { errorMessage, reminderOffsetLabel } from '../lib/format'
+import { errorMessage, formatOptionalDateTime, reminderOffsetLabel } from '../lib/format'
 
 interface SettingsProps {
   settings: AppSettings
   syncStatus: SyncStatus
+  chaoxing: ChaoxingSessionStatus
   entries: OfficialEntry[]
   appInfo: AppInfo
   reminderRuntime: BootstrapData['reminderRuntime']
@@ -49,6 +55,8 @@ interface SettingsProps {
   onToggleEntry: (entry: OfficialEntry, enabled: boolean) => Promise<void>
   onRemoveEntry: (entry: OfficialEntry) => Promise<void>
   onSyncRun: () => Promise<SyncStatus>
+  onChaoxingCheck: () => Promise<ChaoxingSessionStatus>
+  onChaoxingSync: () => Promise<ChaoxingSessionStatus>
   onImported: () => Promise<void>
   notify: (kind: ToastKind, message: string) => void
 }
@@ -79,6 +87,19 @@ const SNAPSHOT_SYNC_STATE_LABEL: Record<SyncStatus['state'], string> = {
   failure: '快照导入失败'
 }
 
+const AUTH_STATE_LABEL: Record<ChaoxingSessionStatus['authState'], string> = {
+  unknown: '未检查',
+  logged_out: '未登录',
+  authenticated: '已登录',
+  expired: '登录已过期'
+}
+
+function authStateColor(state: ChaoxingSessionStatus['authState']): string {
+  if (state === 'authenticated') return 'var(--success)'
+  if (state === 'expired' || state === 'logged_out') return 'var(--warning)'
+  return 'var(--text-faint)'
+}
+
 function snapshotSyncStateLabel(state: SyncStatus['state']): string {
   return SNAPSHOT_SYNC_STATE_LABEL[state]
 }
@@ -86,6 +107,7 @@ function snapshotSyncStateLabel(state: SyncStatus['state']): string {
 export function Settings({
   settings,
   syncStatus,
+  chaoxing,
   entries,
   appInfo,
   reminderRuntime,
@@ -95,6 +117,8 @@ export function Settings({
   onToggleEntry,
   onRemoveEntry,
   onSyncRun,
+  onChaoxingCheck,
+  onChaoxingSync,
   onImported,
   notify
 }: SettingsProps) {
@@ -117,6 +141,11 @@ export function Settings({
   const [entryKind, setEntryKind] = useState<OfficialEntry['kind']>('custom')
   const [ssoDomainsText, setSsoDomainsText] = useState(settings.trustedSsoDomains.join('\n'))
   const [ssoSaving, setSsoSaving] = useState(false)
+  const [credential, setCredential] = useState<ChaoxingCredentialStatus | null>(null)
+  const [credentialUser, setCredentialUser] = useState('')
+  const [credentialPassword, setCredentialPassword] = useState('')
+  const [credentialBusy, setCredentialBusy] = useState(false)
+  const [showCredentialPassword, setShowCredentialPassword] = useState(false)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const snapshotInput = useRef<HTMLInputElement | null>(null)
 
@@ -138,6 +167,16 @@ export function Settings({
         setAiModel(config.model)
       })
       .catch(() => undefined)
+    void window.studynext.chaoxing
+      .credentialsStatus()
+      .then((status) => {
+        if (alive) setCredential(status)
+      })
+      .catch(() => undefined)
+    if (chaoxing.authState === 'unknown') {
+      // Opening Settings after a fresh login should not require an extra click.
+      void onChaoxingCheck()
+    }
     return () => {
       alive = false
     }
@@ -298,6 +337,92 @@ export function Settings({
       notify('error', errorMessage(error))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const checkChaoxing = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const status = await onChaoxingCheck()
+      if (status.authState === 'authenticated') {
+        notify('success', `已确认学习通登录态${status.displayName ? `：${status.displayName}` : ''}`)
+      } else if (status.authState === 'expired') {
+        notify('info', '学习通登录态已过期，请在 Portal 中重新登录。')
+      } else if (status.authState === 'logged_out') {
+        notify('info', '尚未在 Portal 登录学习通。')
+      } else {
+        notify('info', status.message)
+      }
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const syncChaoxing = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const status = await onChaoxingSync()
+      if (status.authState === 'authenticated') {
+        notify('success', status.message)
+      } else {
+        notify('info', status.message)
+      }
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const saveCredentials = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    if (!credentialUser.trim() || !credentialPassword) return
+    setCredentialBusy(true)
+    try {
+      const status = await window.studynext.chaoxing.saveCredentials({
+        username: credentialUser.trim(),
+        password: credentialPassword
+      })
+      setCredential(status)
+      setCredentialPassword('')
+      notify('success', '账号已加密保存在本机，仅用于官方登录页自动填充。')
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setCredentialBusy(false)
+    }
+  }
+
+  const clearCredentials = async (): Promise<void> => {
+    setCredentialBusy(true)
+    try {
+      const status = await window.studynext.chaoxing.clearCredentials()
+      setCredential(status)
+      setCredentialUser('')
+      setCredentialPassword('')
+      notify('success', '已清除本机保存的学习通账号。')
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setCredentialBusy(false)
+    }
+  }
+
+  const fillCredentials = async (): Promise<void> => {
+    setCredentialBusy(true)
+    try {
+      const filled = await window.studynext.chaoxing.fillCredentials()
+      if (filled) {
+        notify('success', '已填充官方登录页，请核对后手动点击登录。')
+      } else {
+        notify('info', '当前不在学习通登录页，或本机尚未保存账号。')
+      }
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setCredentialBusy(false)
     }
   }
 
@@ -599,38 +724,199 @@ export function Settings({
           <section className="card settings-section" id="settings-portal">
             <div className="settings-section-head">
               <h3>学习通与同步</h3>
-              <p>官方页面在隔离视图中运行；数据同步需要已授权的适配器。</p>
+              <p>官方页面在隔离视图中运行；登录后可在本页检查状态并手动同步课程与作业。</p>
             </div>
             <div className="settings-rows">
-              <div
-                className="sync-banner"
-                style={
-                  syncStatus.state === 'failure' ? { background: 'var(--danger-soft)' } : undefined
-                }
-              >
-                <TriangleAlert />
-                <span>
-                  <strong>
-                    {syncStatus.source === 'import'
-                      ? snapshotSyncStateLabel(syncStatus.state)
-                      : SYNC_STATE_LABEL[syncStatus.state]}
-                    ：
-                  </strong>{' '}
-                  {syncStatus.message}{' '}
-                  {syncStatus.lastSuccessAt
-                    ? `${syncStatus.source === 'import' ? '上次导入' : '上次成功'}：${new Date(syncStatus.lastSuccessAt).toLocaleString('zh-CN')}。`
-                    : ''}
-                </span>
-                <button
-                  type="button"
-                  className="btn small"
-                  style={{ marginLeft: 'auto' }}
-                  onClick={() => void runSync()}
-                  disabled={busy}
-                >
-                  <RefreshCw size={13} /> 检查同步
-                </button>
+              <div className="chaoxing-card">
+                <div className="chaoxing-card-head">
+                  <div>
+                    <div className="setting-label">学习通连接</div>
+                    <div className="setting-desc">
+                      连接方式：Web Session（用户本人在 Portal 登录，应用只读同步） · 传输：
+                      {chaoxing.transport === 'none'
+                        ? '未建立'
+                        : chaoxing.transport === 'session_fetch'
+                          ? 'session.fetch'
+                          : 'net.request'}
+                    </div>
+                  </div>
+                  <span className="chaoxing-badge">
+                    <span
+                      className="dot"
+                      style={{ background: authStateColor(chaoxing.authState) }}
+                    />
+                    {AUTH_STATE_LABEL[chaoxing.authState]}
+                  </span>
+                </div>
+                <div className="chaoxing-grid">
+                  <div>
+                    <span>账号</span>
+                    <strong>{chaoxing.displayName ?? '—'}</strong>
+                  </div>
+                  <div>
+                    <span>学校</span>
+                    <strong>{chaoxing.school ?? '—'}</strong>
+                  </div>
+                  <div>
+                    <span>最近检查</span>
+                    <strong>{formatOptionalDateTime(chaoxing.checkedAt)}</strong>
+                  </div>
+                  <div>
+                    <span>最近同步</span>
+                    <strong>{formatOptionalDateTime(chaoxing.lastSyncAt)}</strong>
+                  </div>
+                  <div>
+                    <span>已同步课程</span>
+                    <strong>{chaoxing.syncedCourses}</strong>
+                  </div>
+                  <div>
+                    <span>已同步作业</span>
+                    <strong>{chaoxing.syncedTasks}</strong>
+                  </div>
+                </div>
+                <div className="setting-desc" style={{ marginTop: 8 }}>
+                  {chaoxing.message}
+                  {chaoxing.detail ? ` ${chaoxing.detail}` : ''}
+                </div>
+                <div className="chaoxing-actions">
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => void checkChaoxing()}
+                    disabled={busy}
+                  >
+                    <ShieldCheck size={13} /> 检查登录状态
+                  </button>
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => void syncChaoxing()}
+                    disabled={busy || chaoxing.authState !== 'authenticated'}
+                  >
+                    <RefreshCw size={13} /> 仅同步学习通
+                  </button>
+                </div>
+                <div className="chaoxing-credentials">
+                  <div className="chaoxing-credentials-head">
+                    <div>
+                      <div className="setting-label">记住账号密码</div>
+                      <div className="setting-desc">
+                        使用 Windows DPAPI 加密保存在本机，仅用于官方登录页自动填充；不会上传，也不会写入日志或导出文件。
+                      </div>
+                    </div>
+                    {credential?.saved ? (
+                      <span className="chaoxing-badge">已加密保存</span>
+                    ) : null}
+                  </div>
+                  {credential?.saved ? (
+                    <div className="chaoxing-credential-saved">
+                      <span>
+                        账号：<strong>{credential.username}</strong>
+                      </span>
+                      <div className="chaoxing-actions">
+                        <button
+                          type="button"
+                          className="btn small"
+                          onClick={() => void fillCredentials()}
+                          disabled={credentialBusy}
+                        >
+                          <KeyRound size={13} /> 填充登录页
+                        </button>
+                        <button
+                          type="button"
+                          className="btn small"
+                          onClick={() => void clearCredentials()}
+                          disabled={credentialBusy}
+                        >
+                          <Trash2 size={13} /> 清除
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <form
+                      className="chaoxing-credential-form"
+                      onSubmit={(event) => void saveCredentials(event)}
+                    >
+                      <input
+                        type="text"
+                        value={credentialUser}
+                        onChange={(event) => setCredentialUser(event.target.value)}
+                        placeholder="学习通账号（手机号或邮箱）"
+                        autoComplete="username"
+                        disabled={credentialBusy}
+                      />
+                      <div className="password-field">
+                        <input
+                          type={showCredentialPassword ? 'text' : 'password'}
+                          value={credentialPassword}
+                          onChange={(event) => setCredentialPassword(event.target.value)}
+                          placeholder="密码"
+                          autoComplete="current-password"
+                          disabled={credentialBusy}
+                        />
+                        <button
+                          type="button"
+                          className="password-toggle"
+                          onClick={() => setShowCredentialPassword((visible) => !visible)}
+                          aria-label={showCredentialPassword ? '隐藏密码' : '显示密码'}
+                          title={showCredentialPassword ? '隐藏密码' : '显示密码'}
+                          disabled={credentialBusy}
+                        >
+                          {showCredentialPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                      <button
+                        type="submit"
+                        className="btn small"
+                        disabled={
+                          credentialBusy || !credentialUser.trim() || !credentialPassword
+                        }
+                      >
+                        <Save size={13} /> 保存
+                      </button>
+                    </form>
+                  )}
+                  {credential && !credential.encryptionAvailable ? (
+                    <div className="setting-desc">当前系统未提供 DPAPI 加密，账号不会被保存。</div>
+                  ) : null}
+                </div>
               </div>
+
+              {!(
+                chaoxing.authState === 'authenticated' && syncStatus.state === 'not_configured'
+              ) ? (
+                <div
+                  className="sync-banner"
+                  style={
+                    syncStatus.state === 'failure'
+                      ? { background: 'var(--danger-soft)' }
+                      : undefined
+                  }
+                >
+                  <TriangleAlert />
+                  <span>
+                    <strong>
+                      {syncStatus.source === 'import'
+                        ? snapshotSyncStateLabel(syncStatus.state)
+                        : SYNC_STATE_LABEL[syncStatus.state]}
+                      ：
+                    </strong>{' '}
+                    {syncStatus.message}{' '}
+                    {syncStatus.lastSuccessAt
+                      ? `${syncStatus.source === 'import' ? '上次导入' : '上次成功'}：${new Date(syncStatus.lastSuccessAt).toLocaleString('zh-CN')}。`
+                      : ''}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn small"
+                    style={{ marginLeft: 'auto' }}
+                    onClick={() => void runSync()}
+                    disabled={busy}
+                  >
+                    <RefreshCw size={13} /> 检查同步
+                  </button>
+                </div>
+              ) : null}
 
               <div style={{ marginTop: 14 }}>
                 <div className="setting-label" style={{ marginBottom: 7 }}>
@@ -1085,10 +1371,10 @@ export function Settings({
                 <div className="setting-copy">
                   <div className="setting-label">学习通数据接入</div>
                   <div className="setting-desc">
-                    当前未配置授权适配器。应用不会使用私有接口或绕过登录限制，同步按钮会如实返回“未配置”。
+                    使用你在 Portal 中本人登录后建立的 Web Session，只读读取课程与作业；应用不保存账号密码，也不会绕过验证码或风控。登录状态以受保护页面的实际请求结果为准。
                   </div>
                 </div>
-                <span className="portal-status">未配置</span>
+                <span className="portal-status">{AUTH_STATE_LABEL[chaoxing.authState]}</span>
               </div>
             </div>
           </section>

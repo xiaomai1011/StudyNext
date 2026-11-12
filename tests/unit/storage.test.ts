@@ -189,6 +189,9 @@ describe('SQLite 持久化', () => {
     for (const column of [
       'completion_source',
       'source_updated_at',
+      'source_url',
+      'platform_status',
+      'platform_status_kind',
       'manual_fields_json',
       'field_sources_json'
     ]) {
@@ -206,11 +209,16 @@ describe('SQLite 持久化', () => {
         expect.arrayContaining([
           'completion_source',
           'source_updated_at',
+          'source_url',
+          'platform_status',
+          'platform_status_kind',
           'manual_fields_json',
           'field_sources_json'
         ])
       )
       expect(migrated.getTask(taskId)?.title).toBe('迁移前任务')
+      expect(migrated.getTask(taskId)?.sourceUrl).toBeNull()
+      expect(migrated.getTask(taskId)?.platformStatusKind).toBe('unknown')
       expect(migrated.listTaskHistory(taskId)).toEqual([])
       expect(migrated.getMeta('schema_version')).toBe('3')
     } finally {

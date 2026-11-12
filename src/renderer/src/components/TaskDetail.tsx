@@ -1,11 +1,21 @@
 import { useEffect, useState } from 'react'
-import { Bell, BookOpen, CalendarClock, CheckCircle2, Circle, Pencil, Trash2 } from 'lucide-react'
+import {
+  Bell,
+  BookOpen,
+  CalendarClock,
+  CheckCircle2,
+  Circle,
+  ExternalLink,
+  Pencil,
+  Trash2
+} from 'lucide-react'
 import type { Course, Task, TaskChange } from '@shared/types'
 import { dueBucket, formatRemainingCompact } from '@shared/domain'
 import { Modal } from './Modal'
 import {
   BUCKET_LABEL,
   formatDateTime,
+  formatDueAt,
   kindLabel,
   priorityLabel,
   reminderOffsetLabel
@@ -25,6 +35,8 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
   const [history, setHistory] = useState<TaskChange[]>([])
   const done = task.status === 'done'
   const bucket = dueBucket(task)
+  const dueLabel = formatDueAt(task.dueAt)
+  const remainingLabel = dueLabel ? formatRemainingCompact(task.dueAt) : ''
   const reminders = task.reminders.filter((rule) => rule.enabled)
 
   useEffect(() => {
@@ -62,6 +74,15 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
             <Trash2 size={14} /> 删除
           </button>
           <span className="spacer" />
+          {task.sourceUrl ? (
+            <button
+              type="button"
+              className="btn small"
+              onClick={() => void window.studynext.app.openExternal(task.sourceUrl as string)}
+            >
+              <ExternalLink size={14} /> 打开学习通原页
+            </button>
+          ) : null}
           <button type="button" className="btn small" onClick={onEdit}>
             <Pencil size={14} /> 编辑
           </button>
@@ -85,8 +106,8 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
           >
             {BUCKET_LABEL[bucket]}
           </span>
-          <span>{formatRemainingCompact(task.dueAt)}</span>
-          <span className="dot-separator" />
+          {remainingLabel ? <span>{remainingLabel}</span> : null}
+          {remainingLabel ? <span className="dot-separator" /> : null}
           <span>{kindLabel(task.kind)}</span>
           <span className="dot-separator" />
           <span>{priorityLabel(task.priority)}</span>
@@ -105,16 +126,18 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
             {course?.name ?? '未关联课程'}
           </div>
         </div>
-        <div className="detail-item">
-          <div className="detail-item-label">截止时间</div>
-          <div
-            className="detail-item-value"
-            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-          >
-            <CalendarClock size={13} />
-            {formatDateTime(task.dueAt)}
+        {dueLabel ? (
+          <div className="detail-item">
+            <div className="detail-item-label">截止时间</div>
+            <div
+              className="detail-item-value"
+              style={{ display: 'flex', alignItems: 'center', gap: 6 }}
+            >
+              <CalendarClock size={13} />
+              {dueLabel}
+            </div>
           </div>
-        </div>
+        ) : null}
         <div className="detail-item">
           <div className="detail-item-label">提醒规则</div>
           <div
@@ -136,7 +159,18 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
                 ? '手动创建'
                 : task.source === 'import'
                   ? '本地学习快照'
-                  : '学习通授权适配器'}
+                  : '学习通 Web Session'}
+          </div>
+        </div>
+        <div className="detail-item">
+          <div className="detail-item-label">平台状态</div>
+          <div className="detail-item-value">
+            {task.platformStatus ??
+              (task.platformStatusKind === 'done'
+                ? '已完成'
+                : task.platformStatusKind === 'pending'
+                  ? '未完成'
+                  : '平台未提供')}
           </div>
         </div>
         <div className="detail-item">

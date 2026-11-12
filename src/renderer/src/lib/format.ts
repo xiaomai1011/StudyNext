@@ -1,4 +1,5 @@
 import type { DueBucket } from '@shared/domain'
+import { isDueAtUnknown } from '@shared/domain'
 import type { TaskKind, TaskPriority } from '@shared/types'
 import { TASK_KIND_LABEL, TASK_PRIORITY_LABEL } from '@shared/constants'
 
@@ -27,6 +28,14 @@ export function formatDateTime(iso: string): string {
   const date = new Date(iso)
   if (!Number.isFinite(date.getTime())) return '时间待确认'
   return dateTimeFormatter.format(date)
+}
+
+export function formatDueAt(iso: string): string {
+  return isDueAtUnknown(iso) ? '' : formatDateTime(iso)
+}
+
+export function formatOptionalDateTime(iso: string | null): string {
+  return iso ? formatDateTime(iso) : '—'
 }
 
 export function formatFullDate(date: Date | string): string {
@@ -64,7 +73,7 @@ export const BUCKET_LABEL: Record<DueBucket, string> = {
   overdue: '已逾期',
   today: '今天截止',
   soon: '三天内',
-  upcoming: '之后',
+  upcoming: '未完成',
   done: '已完成'
 }
 

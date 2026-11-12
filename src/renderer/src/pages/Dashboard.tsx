@@ -16,10 +16,13 @@ import type { AppNotice, Course, DataSource, SyncStatus, Task } from '@shared/ty
 import type { NavigateTarget } from '@shared/types'
 import {
   computeTaskStats,
+  dedupeCourseSessions,
   dueBucket,
   formatRemainingCompact,
   isSameLocalDay,
-  sortTasksByDue
+  semesterWeekOf,
+  sortTasksByDue,
+  weekInSchedule
 } from '@shared/domain'
 import { TASK_KIND_LABEL } from '@shared/constants'
 import { courseInitial, formatDateTime, formatTime, relativeTime } from '../lib/format'
@@ -43,7 +46,7 @@ const NOTICE_ICON = {
 function sourceLabel(source: DataSource | null): string {
   if (source === 'demo') return '本地演示数据'
   if (source === 'import') return '本地学习快照'
-  if (source === 'chaoxing') return '学习通授权适配器'
+  if (source === 'chaoxing') return '学习通 Web Session'
   if (source === 'manual') return '手动录入'
   return '尚未连接外部数据源'
 }
@@ -64,40 +67,50 @@ export function Dashboard({
     return () => window.clearInterval(timer)
   }, [])
 
-  const stats = useMemo(() => computeTaskStats(tasks, now), [tasks, now])
+  const visibleTasks = useMemo(
+    () => tasks.filter((task) => !(task.status === 'todo' && dueBucket(task, new Date()) === 'overdue')),
+    [tasks]
+  )
+  const stats = useMemo(() => computeTaskStats(visibleTasks, now), [visibleTasks, now])
   const todayTasks = useMemo(
     () =>
       sortTasksByDue(
-        tasks.filter((task) => {
-          const bucket = dueBucket(task, now)
-          return bucket === 'overdue' || bucket === 'today'
-        })
+        visibleTasks.filter((task) => task.status === 'todo')
       ).slice(0, 6),
-    [tasks, now]
+    [visibleTasks]
   )
   const upcoming = useMemo(
     () =>
       sortTasksByDue(
-        tasks.filter((task) => {
+        visibleTasks.filter((task) => {
           if (task.status === 'done') return false
           const due = new Date(task.dueAt).getTime()
           return due >= now.getTime() && due <= now.getTime() + 7 * 86_400_000
         })
       ).slice(0, 5),
-    [tasks, now]
+    [visibleTasks, now]
   )
   const courseById = useMemo(() => new Map(courses.map((course) => [course.id, course])), [courses])
   const weekday = now.getDay() === 0 ? 7 : now.getDay()
+  const semesterStart = courses[0]?.semesterStart ?? null
+  const maxWeek = courses[0]?.maxWeek ?? 0
+  const currentWeek = semesterWeekOf(now, semesterStart)
   const todaySessions = useMemo(
     () =>
-      courses
-        .flatMap((course) =>
+      dedupeCourseSessions(
+        courses.flatMap((course) =>
           course.schedule
-            .filter((session) => session.weekday === weekday)
+            .filter(
+              (session) =>
+                session.weekday === weekday &&
+                (currentWeek === null ||
+                  ((maxWeek === 0 || (currentWeek >= 1 && currentWeek <= maxWeek)) &&
+                    weekInSchedule(session.weeks, currentWeek)))
+            )
             .map((session) => ({ course, session }))
         )
-        .sort((a, b) => a.session.startTime.localeCompare(b.session.startTime)),
-    [courses, weekday]
+      ).sort((a, b) => a.session.startTime.localeCompare(b.session.startTime)),
+    [courses, weekday, currentWeek, maxWeek]
   )
   const greeting =
     now.getHours() < 6
@@ -136,14 +149,14 @@ export function Dashboard({
             <span className="metric-icon">
               <CalendarClock />
             </span>
-            今日待办
+            未完成任务
           </div>
           <div className="metric-value">
-            {stats.dueToday}
+            {stats.open}
             <span className="metric-suffix">项</span>
           </div>
           <div className="metric-foot">
-            {stats.overdue > 0 ? `另有 ${stats.overdue} 项已逾期` : '今天没有逾期任务'}
+            {stats.overdue > 0 ? `其中 ${stats.overdue} 项已逾期` : '已逾期任务不在此列出'}
           </div>
         </article>
 
@@ -202,8 +215,8 @@ export function Dashboard({
           <section className="card">
             <div className="card-header">
               <div>
-                <h2 className="card-title">今日待办</h2>
-                <p className="card-subtitle">逾期与今天截止的任务优先显示</p>
+                <h2 className="card-title">待办任务</h2>
+                <p className="card-subtitle">所有未完成任务，按截止时间排序</p>
               </div>
               <span className="spacer" />
               <button type="button" className="text-link" onClick={() => onNavigate('tasks')}>
@@ -216,9 +229,9 @@ export function Dashboard({
                   <div className="empty-icon">
                     <CheckCircle2 />
                   </div>
-                  <div className="empty-title">今天清清爽爽</div>
+                  <div className="empty-title">当前没有未完成任务</div>
                   <div className="empty-text">
-                    没有逾期或今日截止的任务，可以去任务中心安排下一步。
+                    所有任务都已完成；新的作业同步后会自动出现在这里。
                   </div>
                 </div>
               ) : (
@@ -365,7 +378,9 @@ export function Dashboard({
             <div className="card-header">
               <div>
                 <h2 className="card-title">最近通知</h2>
-                <p className="card-subtitle">当前为演示通知，不代表学习通消息</p>
+                <p className="card-subtitle">
+                  {notices.length > 0 ? '当前为演示通知，不代表学习通消息' : '尚未接入学习通通知'}
+                </p>
               </div>
               <span className="spacer" />
               <button type="button" className="text-link" onClick={() => onNavigate('portal')}>

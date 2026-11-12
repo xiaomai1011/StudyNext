@@ -25,6 +25,9 @@ import {
   type NotificationScheduler
 } from './notifications/scheduler'
 import { SyncService } from './integrations/sync'
+import { ChaoxingSessionService } from './integrations/chaoxing/service'
+import { ChaoxingSessionAdapter } from './integrations/chaoxing/adapter'
+import { ChaoxingCredentialStore } from './integrations/chaoxing/credentials'
 import { AiService } from './integrations/ai'
 import { PortalService } from './portal/service'
 import { registerIpc } from './ipc'
@@ -92,10 +95,26 @@ if (startupError) {
 async function initialize(): Promise<void> {
   const dataPath = app.getPath('userData')
   store = new StudyNextStore(join(dataPath, 'studynext.sqlite'))
-  portal = new PortalService(store, () => mainWindow)
+  const credentials = new ChaoxingCredentialStore()
+  portal = new PortalService(
+    store,
+    () => mainWindow,
+    () => credentials.load()
+  )
 
   const notices = buildDemoNotices()
   const sync = new SyncService(store)
+  const chaoxing = new ChaoxingSessionService(
+    store,
+    new ChaoxingSessionAdapter(
+      undefined,
+      () => (portal ? portal.ensureCoursePageHtml() : Promise.resolve(null)),
+      () => (portal ? portal.readScheduleFromPage() : Promise.resolve(null))
+    ),
+    (outcome) => {
+      sync.recordSessionResult(outcome)
+    }
+  )
   const ai = new AiService(store)
   scheduler = createNotificationScheduler({
     store,
@@ -115,6 +134,8 @@ async function initialize(): Promise<void> {
     store,
     scheduler,
     sync,
+    chaoxing,
+    credentials,
     ai,
     portal,
     getWindow: () => mainWindow,

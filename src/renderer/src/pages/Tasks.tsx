@@ -12,7 +12,7 @@ import {
 import type { Course, Task, TaskPriority, TaskStatus } from '@shared/types'
 import { dueBucket, filterTasks, sortTasksByDue } from '@shared/domain'
 import { TASK_KIND_LABEL } from '@shared/constants'
-import { BUCKET_LABEL, formatDateTime, priorityLabel } from '../lib/format'
+import { BUCKET_LABEL, formatDueAt, priorityLabel } from '../lib/format'
 
 type SortMode = 'due' | 'created' | 'priority'
 
@@ -27,7 +27,7 @@ interface TasksProps {
 }
 
 const PRIORITY_WEIGHT: Record<TaskPriority, number> = { high: 0, medium: 1, low: 2 }
-const BUCKET_ORDER = ['overdue', 'today', 'soon', 'upcoming', 'done'] as const
+const BUCKET_ORDER = ['today', 'soon', 'upcoming', 'done'] as const
 
 export function Tasks({
   tasks,
@@ -45,35 +45,40 @@ export function Tasks({
   const [sortMode, setSortMode] = useState<SortMode>('due')
 
   const courseById = useMemo(() => new Map(courses.map((course) => [course.id, course])), [courses])
+  // 已逾期的待办不再展示：逾期后继续占用任务列表只会制造噪音。
+  const visibleTasks = useMemo(
+    () => tasks.filter((task) => !(task.status === 'todo' && dueBucket(task, new Date()) === 'overdue')),
+    [tasks]
+  )
   const counts = useMemo(
     () => ({
-      all: tasks.length,
-      todo: tasks.filter((task) => task.status === 'todo').length,
-      done: tasks.filter((task) => task.status === 'done').length
+      all: visibleTasks.length,
+      todo: visibleTasks.filter((task) => task.status === 'todo').length,
+      done: visibleTasks.filter((task) => task.status === 'done').length
     }),
-    [tasks]
+    [visibleTasks]
   )
 
   const filtered = useMemo(() => {
-    const result = filterTasks(tasks, {
+    const scoped = filterTasks(visibleTasks, {
       query,
       status,
       priority,
       ...(courseId !== 'all' ? { courseId } : {})
     })
     if (sortMode === 'created') {
-      return [...result].sort(
+      return [...scoped].sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       )
     }
     if (sortMode === 'priority') {
-      return [...result].sort((a, b) => {
+      return [...scoped].sort((a, b) => {
         const diff = PRIORITY_WEIGHT[a.priority] - PRIORITY_WEIGHT[b.priority]
         return diff !== 0 ? diff : new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()
       })
     }
-    return sortTasksByDue(result)
-  }, [tasks, query, status, priority, courseId, sortMode])
+    return sortTasksByDue(scoped)
+  }, [visibleTasks, query, status, priority, courseId, sortMode])
 
   const groups = useMemo(() => {
     if (sortMode !== 'due') return null
@@ -87,6 +92,7 @@ export function Tasks({
   const renderRow = (task: Task): JSX.Element => {
     const course = task.courseId ? courseById.get(task.courseId) : null
     const bucket = dueBucket(task)
+    const dueLabel = formatDueAt(task.dueAt)
     return (
       <div className={task.status === 'done' ? 'task-row done' : 'task-row'} key={task.id}>
         <button
@@ -112,8 +118,12 @@ export function Tasks({
             )}
             <span className="dot-separator" />
             <span>{TASK_KIND_LABEL[task.kind]}</span>
-            <span className="dot-separator" />
-            <span>{formatDateTime(task.dueAt)}</span>
+            {dueLabel ? (
+              <>
+                <span className="dot-separator" />
+                <span>{dueLabel}</span>
+              </>
+            ) : null}
             {task.reminders.filter((rule) => rule.enabled).length > 0 ? (
               <span className="reminder-count">
                 <Bell /> {task.reminders.filter((rule) => rule.enabled).length}

@@ -36,7 +36,7 @@ describe('SyncService', () => {
     const result = await service.run()
     expect(result.state).toBe('not_configured')
     expect(result.lastSuccessAt).toBeNull()
-    expect(result.message).toContain('尚未配置')
+    expect(result.message).toContain('尚未连接')
   })
 
   it('授权适配器失败时返回 failure 且保留本地数据', async () => {

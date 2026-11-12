@@ -176,6 +176,7 @@ export function Courses({ courses, onToggleFavorite, onOpenOfficial }: CoursesPr
                       <span>
                         {WEEKDAY_LABELS[session.weekday]} {session.startTime}–{session.endTime} ·{' '}
                         {session.location}
+                        {session.weeks ? ` · 第 ${session.weeks} 周` : ''}
                       </span>
                     </div>
                   ))

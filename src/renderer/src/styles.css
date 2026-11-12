@@ -3441,3 +3441,154 @@ a {
 .task-history-row:last-child {
   border-bottom: 0;
 }
+
+.chaoxing-card {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.chaoxing-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chaoxing-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-soft);
+  white-space: nowrap;
+}
+
+.chaoxing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+
+.chaoxing-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.chaoxing-grid span {
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.chaoxing-grid strong {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-soft);
+}
+
+.chaoxing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.chaoxing-credentials {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.chaoxing-credentials-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.chaoxing-credential-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.chaoxing-credential-form input {
+  flex: 1 1 160px;
+  min-width: 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2, var(--surface));
+  color: var(--text);
+  font-size: 12px;
+}
+
+.chaoxing-credential-form input:focus {
+  outline: 2px solid var(--accent-soft, var(--accent));
+  outline-offset: 1px;
+}
+
+.chaoxing-credential-form .password-field {
+  position: relative;
+  display: flex;
+  flex: 1 1 160px;
+  min-width: 0;
+}
+
+.chaoxing-credential-form .password-field input {
+  width: 100%;
+  padding-right: 34px;
+}
+
+.password-toggle {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-soft);
+  cursor: pointer;
+  transform: translateY(-50%);
+}
+
+.password-toggle:hover {
+  color: var(--text);
+  background: var(--surface-3, var(--surface-2));
+}
+
+.chaoxing-credential-saved {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--text-soft);
+}
+
+.chaoxing-credential-saved .chaoxing-actions {
+  margin-top: 0;
+}
+
+@media (max-width: 720px) {
+  .chaoxing-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
