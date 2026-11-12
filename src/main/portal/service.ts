@@ -1,7 +1,15 @@
-import { BrowserWindow, WebContentsView, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, WebContentsView, session, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
-import type { PortalLoginState, PortalNavigationEvent, PortalState } from '@shared/types'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { basename, extname, isAbsolute, join } from 'node:path'
+import type {
+  PortalDownload,
+  PortalLoginState,
+  PortalNavigationEvent,
+  PortalState
+} from '@shared/types'
 import { PORTAL_PARTITION } from '@shared/constants'
+import { IPC } from '@shared/ipc'
 import type { StudyNextStore } from '../storage/store'
 import { UserFacingError } from '../lib/errors'
 import {
@@ -41,12 +49,19 @@ export class PortalService {
   private bounds: Rect = { x: 0, y: 0, width: 0, height: 0 }
   private sessionConfigured = false
   private currentUrl = ''
+  private readonly downloads = new Map<string, PortalDownload>()
+  private readonly downloadItems = new Map<string, Electron.DownloadItem>()
+  private readonly downloadRequests = new Map<string, AbortController>()
+  private readonly reservedFilenames = new Set<string>()
+  private downloadsHydrated = false
 
   constructor(
     private readonly store: StudyNextStore,
     private readonly getWindow: () => BrowserWindow | null,
     private readonly getCredentials?: () => Promise<{ username: string; password: string } | null>
-  ) {}
+  ) {
+    this.hydrateDownloads()
+  }
 
   getState(): PortalState {
     return { ...this.state, navigationLog: [...this.state.navigationLog] }
@@ -68,8 +83,21 @@ export class PortalService {
     if (this.view) this.view.setBounds(this.bounds)
   }
 
-  async open(entryId: string): Promise<void> {
-    const entry = this.store.getOfficialEntry(entryId)
+  async openUrl(url: string): Promise<void> {
+    const target = upgradePortalHttpUrl(url) ?? url
+    if (!isAllowedPortalUrl(target)) {
+      throw new UserFacingError('PORTAL_URL_BLOCKED', '仅支持在学习通官方页面中打开')
+    }
+    if (!this.view) await this.open('entry-home')
+    const contents = this.view?.webContents
+    if (!contents || contents.isDestroyed()) {
+      throw new UserFacingError('PORTAL_NOT_OPEN', '官方页面尚未打开')
+    }
+    this.appendNavigation('navigate', target, true, null)
+    await contents.loadURL(target)
+  }
+
+  async open(entryId: string): Promise<void> {    const entry = this.store.getOfficialEntry(entryId)
     if (!entry || !entry.enabled) {
       throw new UserFacingError('ENTRY_NOT_FOUND', '官方入口不存在或已停用')
     }
@@ -203,13 +231,197 @@ export class PortalService {
   }
 
   /**
+   * 打开某门课程的章节页，读取已渲染的章节目录 DOM。
+   * 章节页在 mooc2-ans 子 frame 中，主进程 HTTP 请求会被 Chromium 拦截；
+   * 这里只读取 Portal 已经渲染的 frame，不提交、不点击任务点。
+   */
+  async readChapterHtml(courseUrl: string): Promise<string | null> {
+    const contents = this.view?.webContents
+    if (!contents || contents.isDestroyed() || !isAllowedPortalUrl(courseUrl)) return null
+    const previous = contents.getURL()
+    try {
+      await contents.loadURL(courseUrl)
+    } catch {
+      return null
+    }
+    try {
+      for (let attempt = 0; attempt < 15; attempt += 1) {
+        if (attempt === 0 || attempt === 4) {
+          try {
+            await contents.mainFrame.executeJavaScript(
+              "(() => { const el = Array.from(document.querySelectorAll('span.nav_content, a')).find((item) => item.textContent.trim() === '章节'); if (el) { el.click(); return true } return false })()",
+              true
+            )
+          } catch {
+            // Navigation may be mid-load; the next attempt retries.
+          }
+        }
+        const frames = [
+          contents.mainFrame,
+          ...contents.mainFrame.framesInSubtree.filter((frame) => frame !== contents.mainFrame)
+        ]
+        let best: string | null = null
+        let bestCount = 0
+        for (const frame of frames) {
+          try {
+            const count = (await frame.executeJavaScript(
+              "document.querySelectorAll('.chapter_item, .catalog_name').length",
+              true
+            )) as number
+            if (typeof count === 'number' && count > bestCount) {
+              const html = (await frame.executeJavaScript(
+                'document.documentElement.outerHTML',
+                true
+              )) as string
+              if (typeof html === 'string' && html.length > 0) {
+                best = html
+                bestCount = count
+              }
+            }
+          } catch {
+            // Frame may be detached or still loading.
+          }
+        }
+        if (best && bestCount > 0) return best
+        await new Promise((resolve) => setTimeout(resolve, 400))
+      }
+      return null
+    } finally {
+      if (previous && previous !== courseUrl && isAllowedPortalUrl(previous)) {
+        void contents.loadURL(previous).catch(() => undefined)
+      }
+    }
+  }
+
+  /**
+   * 打开课程“资料”页并读取文件列表 DOM。
+   * “资料”是课程页里的另一个子 frame，只有点击顶部导航后才会加载；
+   * 只读取行内容，不打开、不下载任何文件。
+   */
+  async readMaterialHtml(courseUrl: string): Promise<string | null> {
+    const contents = this.view?.webContents
+    if (!contents || contents.isDestroyed() || !isAllowedPortalUrl(courseUrl)) return null
+    const previous = contents.getURL()
+    try {
+      await contents.loadURL(courseUrl)
+    } catch {
+      return null
+    }
+    try {
+      let lastCount = 0
+      let stableRounds = 0
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        if (attempt === 0 || attempt === 4) {
+          try {
+            await contents.mainFrame.executeJavaScript(
+              "(() => { const el = Array.from(document.querySelectorAll('span.nav_content, a')).find((item) => item.textContent.trim() === '资料'); if (el) { el.click(); return true } return false })()",
+              true
+            )
+          } catch {
+            // Navigation may be mid-load; retry below.
+          }
+        }
+        const frames = [
+          contents.mainFrame,
+          ...contents.mainFrame.framesInSubtree.filter((frame) => frame !== contents.mainFrame)
+        ]
+        let best: string | null = null
+        let bestFrame: { executeJavaScript: (code: string, userGesture?: boolean) => Promise<unknown> } | null =
+          null
+        let bestCount = 0
+        let bestTotal = 0
+        for (const frame of frames) {
+          try {
+            const info = (await frame.executeJavaScript(
+              `(() => {
+                const count = document.querySelectorAll('ul.dataBody_td').length
+                const match = (document.body && document.body.innerText || '').match(/当前页共\\s*(\\d+)\\s*个/)
+                return { count, total: match ? Number(match[1]) : 0 }
+              })()`,
+              true
+            )) as { count?: number; total?: number }
+            const count = typeof info?.count === 'number' ? info.count : 0
+            if (count > bestCount) {
+              const html = (await frame.executeJavaScript(
+                'document.documentElement.outerHTML',
+                true
+              )) as string
+              if (typeof html === 'string' && html.length > 0) {
+                best = html
+                bestCount = count
+                bestFrame = frame
+                bestTotal = typeof info?.total === 'number' ? info.total : 0
+              }
+            }
+          } catch {
+            // Frame may be detached or still loading.
+          }
+        }
+        if (best && bestCount > 0) {
+          stableRounds = bestCount === lastCount ? stableRounds + 1 : 0
+          lastCount = bestCount
+          if ((bestTotal > 0 && bestCount >= bestTotal) || stableRounds >= 1) {
+            const extra = bestFrame ? await this.collectMaterialPages(bestFrame) : ''
+            return extra ? `${best}<div data-studynext-more="1">${extra}</div>` : best
+          }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 400))
+      }
+      return null
+    } finally {
+      if (previous && previous !== courseUrl && isAllowedPortalUrl(previous)) {
+        void contents.loadURL(previous).catch(() => undefined)
+      }
+    }
+  }
+
+  /**
+   * 资料列表可能分页。只在当前 iframe 内点击页码并合并后续页的条目，
+   * 不访问新的域名，也不触发下载。
+   */
+  private async collectMaterialPages(frame: {
+    executeJavaScript: (code: string, userGesture?: boolean) => Promise<unknown>
+  }): Promise<string> {
+    try {
+      const extra = (await frame.executeJavaScript(
+        `(async () => {
+          const numeric = (el) => /^\\s*\\d+\\s*$/.test((el && el.textContent) || '')
+          const pages = Array.from(document.querySelectorAll('a, button, li'))
+            .filter((el) => numeric(el) && Number(el.textContent.trim()) > 1 && Number(el.textContent.trim()) <= 30)
+            .map((el) => Number(el.textContent.trim()))
+          const unique = Array.from(new Set(pages)).sort((a, b) => a - b).slice(0, 10)
+          if (unique.length === 0) return ''
+          let html = ''
+          for (const page of unique) {
+            const target = Array.from(document.querySelectorAll('a, button, li')).find(
+              (el) => numeric(el) && Number(el.textContent.trim()) === page
+            )
+            if (!target) continue
+            target.click()
+            await new Promise((resolve) => setTimeout(resolve, 900))
+            html += Array.from(document.querySelectorAll('ul.dataBody_td'))
+              .map((el) => el.outerHTML)
+              .join('')
+          }
+          return html
+        })()`,
+        true
+      )) as string
+      return typeof extra === 'string' ? extra : ''
+    } catch {
+      return ''
+    }
+  }
+
+  /**
    * 同步时 Portal 可能还没打开，或课程 iframe 仍在加载。这里按需打开个人空间，
    * 轮询等待课程网格渲染完成；只读取 DOM，不注入任何脚本逻辑。
    */
   async ensureCoursePageHtml(): Promise<string | null> {
     const existing = await this.readCoursePageHtml()
     if (existing) return existing
-    if (!this.view) {
+    const currentUrl = this.view?.webContents.getURL() ?? ''
+    if (!this.view || !currentUrl.startsWith('https://i.chaoxing.com/')) {
       const entries = this.store.listOfficialEntries(false)
       const home =
         entries.find((entry) => entry.id === 'entry-home') ??
@@ -296,6 +508,100 @@ export class PortalService {
     return null
   }
 
+  /**
+   * 考试列表页同样依赖登录态与页面上下文。优先在已打开（或按需打开）的
+   * 考试列表页内用同源 fetch 读取全量列表（status=-1），返回纯 HTML 字符串。
+   * 不点击“进入考试”，不读取或提交任何答案。
+   */
+  async readExamListFromPage(): Promise<string | null> {
+    const entries = this.store.listOfficialEntries(false)
+    const exams = entries.find((entry) => entry.id === 'entry-exams')
+    if (!exams) return null
+    const contents = this.view?.webContents
+    const alreadyOpen =
+      contents &&
+      !contents.isDestroyed() &&
+      contents.getURL().includes('/exam-ans/exam/test/examcode/examlist')
+    if (!alreadyOpen) {
+      try {
+        await this.open(exams.id)
+      } catch {
+        return null
+      }
+    }
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const current = this.view?.webContents
+      if (!current || current.isDestroyed()) return null
+      if (current.getURL().includes('/exam-ans/exam/test/examcode/examlist')) {
+        try {
+          const html = (await current.executeJavaScript(
+            `fetch('/exam-ans/exam/test/examcode/examlist?status=-1', {
+               method: 'GET', credentials: 'include', headers: { Accept: 'text/html' }
+             }).then((response) => response.text())`,
+            true
+          )) as unknown
+          if (typeof html === 'string' && html.length > 0) return html
+        } catch {
+          // Page may still be loading; retry below.
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400))
+    }
+    return null
+  }
+
+  async readNoticeListFromPage(): Promise<string | null> {
+    const entry = this.store.listOfficialEntries(false).find((item) => item.id === 'entry-notices')
+    if (!entry) return null
+    const contents = this.view?.webContents
+    const alreadyOpen =
+      contents &&
+      !contents.isDestroyed() &&
+      contents.getURL().includes('notice.chaoxing.com/pc/notice/myNotice')
+    if (!alreadyOpen) {
+      try {
+        await this.open(entry.id)
+      } catch {
+        return null
+      }
+    }
+    for (let attempt = 0; attempt < 25; attempt += 1) {
+      const current = this.view?.webContents
+      if (!current || current.isDestroyed()) return null
+      if (current.getURL().includes('notice.chaoxing.com')) {
+        try {
+          const raw = (await current.executeJavaScript(
+            `(async () => {
+              const all = [];
+              let lastValue = 0;
+              for (let page = 0; page < 3; page += 1) {
+                const response = await fetch('/pc/notice/getNoticeList', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  credentials: 'include',
+                  body: JSON.stringify({ type: 0, notice_type: 0, lastValue, sort: 0, folderUUID: '', kw: '', startTime: '', endTime: '', gKw: '', gName: '', year: '', tag: '', fidsCode: '', filterSenderPuids: '', filterTags: '' })
+                });
+                const data = await response.json();
+                const list = Array.isArray(data?.notices?.list) ? data.notices.list : [];
+                all.push(...list);
+                const next = Number(data?.notices?.lastGetId ?? 0);
+                if (list.length === 0 || !Number.isFinite(next) || next <= 0 || next === lastValue) break;
+                lastValue = next;
+              }
+              return JSON.stringify({ notices: { list: all } });
+            })()`,
+            true
+          )) as unknown
+          if (typeof raw === 'string' && raw.length > 0) return raw
+        } catch {
+          // Page may still be loading; retry below.
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400))
+    }
+    return null
+  }
+
   async clearSession(): Promise<void> {
     const portalSession = session.fromPartition(PORTAL_PARTITION)
     await portalSession.clearStorageData()
@@ -311,6 +617,202 @@ export class PortalService {
     this.destroyView()
   }
 
+  listDownloads(): PortalDownload[] {
+    this.hydrateDownloads()
+    return [...this.downloads.values()].sort((a, b) => b.startedAt.localeCompare(a.startedAt))
+  }
+
+  getDownloadDirectoryPath(): string {
+    return this.resolveDownloadDirectory()
+  }
+
+  async chooseDownloadDirectory(): Promise<string | null> {
+    const window = this.getWindow()
+    const options: { title: string; properties: Array<'openDirectory' | 'createDirectory'> } = {
+      title: '选择资料下载目录',
+      properties: ['openDirectory', 'createDirectory']
+    }
+    const result = window
+      ? await dialog.showOpenDialog(window, options)
+      : await dialog.showOpenDialog(options)
+    if (result.canceled || result.filePaths.length === 0) return null
+    return result.filePaths[0] ?? null
+  }
+
+  async download(url: string): Promise<void> {
+    const target = this.normalizeDownloadUrl(url)
+    const contents = this.view?.webContents
+    if (contents && !contents.isDestroyed()) {
+      contents.downloadURL(target)
+      return
+    }
+    session.fromPartition(PORTAL_PARTITION).downloadURL(target)
+  }
+
+  async downloadFile(url: string, suggestedName: string, referer = 'https://pan-yz.chaoxing.com/'): Promise<void> {
+    const target = this.normalizeDownloadUrl(url)
+    const directory = this.resolveDownloadDirectory()
+    const filename = uniqueFilename(directory, suggestedName || 'download', this.reservedFilenames)
+    this.reservedFilenames.add(filename)
+    const savePath = join(directory, filename)
+    const id = randomUUID()
+    const record: PortalDownload = {
+      id,
+      filename,
+      url: safeDisplayUrl(target),
+      state: 'progressing',
+      receivedBytes: 0,
+      totalBytes: 0,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      savePath
+    }
+    this.recordDownload(record)
+    const portalSession = session.fromPartition(PORTAL_PARTITION)
+    const controller = new AbortController()
+    this.downloadRequests.set(id, controller)
+    try {
+      const response = await portalSession.fetch(target, {
+        method: 'GET',
+        credentials: 'include',
+        redirect: 'follow',
+        cache: 'no-store',
+        signal: controller.signal,
+        headers: { Referer: this.normalizeDownloadUrl(referer) }
+      })
+      if (!this.isAllowedDownloadResponse(response)) {
+        this.finishDownload(id, 'interrupted')
+        return
+      }
+      const total = Number(response.headers.get('content-length') ?? 0)
+      const buffer = Buffer.from(await response.arrayBuffer())
+      const current = this.downloads.get(id)
+      if (current) this.recordDownload({ ...current, totalBytes: total || buffer.length })
+      if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
+      writeFileSync(savePath, buffer)
+      this.finishDownload(id, 'completed', buffer.length)
+    } catch {
+      this.finishDownload(id, 'interrupted')
+    } finally {
+      this.downloadRequests.delete(id)
+      this.reservedFilenames.delete(filename)
+    }
+  }
+
+  private isAllowedDownloadResponse(response: Response): boolean {
+    if (!response.ok) return false
+    if (response.url) {
+      try {
+        if (!isAllowedPortalUrl(response.url)) return false
+      } catch {
+        return false
+      }
+    }
+    const type = (response.headers.get('content-type') ?? '').toLowerCase()
+    return !type.includes('text/html')
+  }
+
+  async openDownload(id: string): Promise<void> {
+    const item = this.downloads.get(id)
+    if (!item) throw new UserFacingError('DOWNLOAD_NOT_FOUND', '下载记录不存在')
+    if (item.state !== 'completed') throw new UserFacingError('DOWNLOAD_NOT_READY', '文件尚未下载完成')
+    const path = this.downloadPath(id)
+    if (!existsSync(path)) {
+      throw new UserFacingError('DOWNLOAD_FILE_MISSING', '文件已被移动或删除，请重新下载')
+    }
+    const error = await shell.openPath(path)
+    if (error) throw new UserFacingError('DOWNLOAD_OPEN_FAILED', error)
+  }
+
+  async revealDownload(id: string): Promise<void> {
+    const item = this.downloads.get(id)
+    if (!item) throw new UserFacingError('DOWNLOAD_NOT_FOUND', '下载记录不存在')
+    const path = this.downloadPath(id)
+    if (existsSync(path)) shell.showItemInFolder(path)
+  }
+
+  cancelDownload(id: string): void {
+    const item = this.downloadItems.get(id)
+    if (item) item.cancel()
+    const request = this.downloadRequests.get(id)
+    if (request) request.abort()  }
+
+  clearDownloads(): void {
+    const removable: string[] = []
+    for (const [id, item] of this.downloads) {
+      if (item.state === 'progressing') continue
+      this.downloads.delete(id)
+      removable.push(id)
+    }
+    this.store.deleteFinishedDownloads(removable)
+  }
+
+  private downloadPath(id: string): string {
+    const item = this.downloads.get(id)
+    if (!item) return ''
+    return item.savePath ?? join(this.resolveDownloadDirectory(), item.filename)
+  }
+
+  private resolveDownloadDirectory(): string {
+    const configured = this.store.getSettings().downloadDirectory.trim()
+    const directory =
+      configured && isAbsolute(configured)
+        ? configured
+        : join(app.getPath('downloads'), 'StudyNext')
+    mkdirSync(directory, { recursive: true })
+    return directory
+  }
+
+  private normalizeDownloadUrl(raw: string): string {
+    const target = upgradePortalHttpUrl(raw) ?? raw
+    if (!isAllowedPortalUrl(target) || !target.startsWith('https://')) {
+      throw new UserFacingError('PORTAL_URL_BLOCKED', '仅支持从学习通官方 HTTPS 域名下载')
+    }
+    const parsed = new URL(target)
+    if (parsed.username || parsed.password || (parsed.port && parsed.port !== '443')) {
+      throw new UserFacingError('PORTAL_URL_BLOCKED', '下载地址包含不允许的凭据或端口')
+    }
+    return target
+  }
+
+  private hydrateDownloads(): void {
+    if (this.downloadsHydrated) return
+    this.downloadsHydrated = true
+    for (const item of this.store.listDownloads()) {
+      const stale = item.state === 'progressing'
+      const record: PortalDownload = stale ? { ...item, state: 'interrupted' } : item
+      this.downloads.set(record.id, record)
+      if (stale) this.store.upsertDownload(record)
+    }
+  }
+
+  private recordDownload(item: PortalDownload): void {
+    this.downloads.set(item.id, item)
+    this.store.upsertDownload(item)
+    this.emitDownload(item)
+  }
+
+  private emitDownload(item: PortalDownload): void {
+    const window = this.getWindow()
+    if (window && !window.isDestroyed()) {
+      window.webContents.send(IPC.portalDownloadEvent, item)
+    }
+  }
+
+  private finishDownload(id: string, state: PortalDownload['state'], receivedBytes?: number): void {
+    const current = this.downloads.get(id)
+    this.downloadRequests.delete(id)
+    if (!current) return
+    const next: PortalDownload = {
+      ...current,
+      state,
+      receivedBytes: receivedBytes ?? current.receivedBytes,
+      completedAt: new Date().toISOString()
+    }
+    this.recordDownload(next)
+    this.emitDownload(next)
+  }
+
   private configureSession(): void {
     if (this.sessionConfigured) return
     this.sessionConfigured = true
@@ -319,11 +821,50 @@ export class PortalService {
       callback(false)
     })
     portalSession.setPermissionCheckHandler(() => false)
-    portalSession.on('will-download', (event) => {
-      event.preventDefault()
-      if (this.view) {
-        this.updateState({ error: '官方页面下载已拦截，请在系统浏览器中完成下载' })
+    portalSession.on('will-download', (_event, item) => {
+      const directory = this.resolveDownloadDirectory()
+      const filename = uniqueFilename(directory, item.getFilename(), this.reservedFilenames)
+      this.reservedFilenames.add(filename)
+      const savePath = join(directory, filename)
+      item.setSavePath(savePath)
+      const id = randomUUID()
+      const record: PortalDownload = {
+        id,
+        filename,
+        url: safeDisplayUrl(item.getURL()),
+        state: 'progressing',
+        receivedBytes: item.getReceivedBytes(),
+        totalBytes: item.getTotalBytes(),
+        startedAt: new Date().toISOString(),
+        completedAt: null,
+        savePath
       }
+      this.recordDownload(record)
+      this.downloadItems.set(id, item)
+      item.on('updated', (_event, state) => {
+        const current = this.downloads.get(id)
+        if (!current) return
+        const next: PortalDownload = {
+          ...current,
+          state: state === 'progressing' ? 'progressing' : 'interrupted',
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes()
+        }
+        this.recordDownload(next)
+      })
+      item.once('done', (_event, state) => {
+        const current = this.downloads.get(id)
+        if (!current) return
+        const next: PortalDownload = {
+          ...current,
+          state: state === 'completed' ? 'completed' : state === 'cancelled' ? 'cancelled' : 'interrupted',
+          receivedBytes: item.getReceivedBytes(),
+          totalBytes: item.getTotalBytes(),
+          completedAt: new Date().toISOString()
+        }
+        this.recordDownload(next)
+        this.downloadItems.delete(id)
+      })
     })
   }
 
@@ -529,4 +1070,18 @@ export class PortalService {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min
   return Math.min(Math.max(Math.round(value), min), max)
+}
+
+function uniqueFilename(directory: string, raw: string, reserved: Set<string> = new Set()): string {
+  const trimmed = basename(raw || `download-${Date.now()}`).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')
+  const safe = trimmed.trim().slice(0, 140) || `download-${Date.now()}`
+  const extension = extname(safe)
+  const stem = extension ? safe.slice(0, -extension.length) : safe
+  let candidate = safe
+  let index = 1
+  while (existsSync(join(directory, candidate)) || reserved.has(candidate)) {
+    candidate = `${stem} (${index})${extension}`
+    index += 1
+  }
+  return candidate
 }

@@ -86,6 +86,7 @@ function toSettingsPatch(parsed: z.infer<typeof settingsPatchSchema>): Partial<A
   if (parsed.catchUpMissedReminders !== undefined)
     patch.catchUpMissedReminders = parsed.catchUpMissedReminders
   if (parsed.trustedSsoDomains !== undefined) patch.trustedSsoDomains = parsed.trustedSsoDomains
+  if (parsed.downloadDirectory !== undefined) patch.downloadDirectory = parsed.downloadDirectory
   return patch
 }
 
@@ -159,8 +160,13 @@ export function registerIpc(options: RegisterIpcOptions): void {
       studyPoints: store.listStudyPoints(),
       questions: store.listQuestions(),
       tasks: store.listTasks(),
+      exams: store.listExams(),
+      materials: store.listMaterials(),
       settings: store.getSettings(),
-      notices: chaoxing.getStatus().lastSyncAt ? [] : notices,
+      notices: (() => {
+        const providerNotices = store.listNotices()
+        return providerNotices.length > 0 ? providerNotices : notices
+      })(),
       syncStatus: effectiveSyncStatus(),
       chaoxing: chaoxing.getStatus(),
       officialEntries: store.listOfficialEntries(),
@@ -301,11 +307,20 @@ export function registerIpc(options: RegisterIpcOptions): void {
 
   handle(IPC.chaoxingStatus, () => chaoxing.getStatus())
   handle(IPC.chaoxingCheck, () => chaoxing.check())
-  handle(IPC.chaoxingSync, async () => {
-    const status = await chaoxing.sync()
+  handle(IPC.chaoxingSync, async (_event, force) => {
+    const status = await chaoxing.sync(force === true)
     scheduler.refresh()
     return status
   })
+  handle(IPC.chaoxingRetryCourse, async (_event, courseId) => {
+    if (typeof courseId !== 'string' || courseId.length === 0 || courseId.length > 200) {
+      throw new Error('课程 ID 无效')
+    }
+    const status = await chaoxing.retryCourse(courseId)
+    scheduler.refresh()
+    return status
+  })
+  handle(IPC.chaoxingCancel, () => chaoxing.cancel())
 
   handle(IPC.chaoxingCredentialsStatus, () => credentials.status())
   handle(IPC.chaoxingCredentialsSave, (_event, input) => {
@@ -323,6 +338,9 @@ export function registerIpc(options: RegisterIpcOptions): void {
 
   handle(IPC.portalOpen, (_event, entryId) => {
     return portal.open(parseInput(z.string().min(1).max(120), entryId))
+  })
+  handle(IPC.portalOpenUrl, (_event, url) => {
+    return portal.openUrl(parseInput(z.string().min(1).max(2048), url))
   })
   handle(IPC.portalClose, () => portal.close())
   handle(IPC.portalState, () => portal.getState())
@@ -346,6 +364,58 @@ export function registerIpc(options: RegisterIpcOptions): void {
       bounds
     )
     portal.setBounds(parsed)
+  })
+
+  handle(IPC.portalDownloads, () => portal.listDownloads())
+  handle(IPC.portalDownload, (_event, url) => {
+    return portal.download(parseInput(z.string().min(1).max(2048), url))
+  })
+  handle(IPC.portalOpenDownload, (_event, id) => {
+    return portal.openDownload(parseInput(z.string().min(1).max(120), id))
+  })
+  handle(IPC.portalRevealDownload, (_event, id) => {
+    return portal.revealDownload(parseInput(z.string().min(1).max(120), id))
+  })
+  handle(IPC.portalCancelDownload, (_event, id) => {
+    portal.cancelDownload(parseInput(z.string().min(1).max(120), id))
+  })
+  handle(IPC.portalClearDownloads, () => {
+    portal.clearDownloads()
+  })
+  handle(IPC.portalDownloadDirectory, () => portal.getDownloadDirectoryPath())
+  handle(IPC.portalChooseDownloadDirectory, () => portal.chooseDownloadDirectory())
+
+  handle(IPC.materialsDownload, (_event, id) => {
+    const materialId = parseInput(z.string().min(1).max(120), id)
+    const material = store.listMaterials().find((item) => item.id === materialId)
+    if (!material) throw new UserFacingError('MATERIAL_NOT_FOUND', '资料不存在，请先同步')
+    if (material.kind === 'folder') {
+      throw new UserFacingError('MATERIAL_FOLDER', '文件夹不能直接下载，请打开官方页面浏览')
+    }
+    if (material.kind === 'link' && (material.url ?? material.sourceUrl)) {
+      return portal.downloadFile(material.url ?? material.sourceUrl ?? '', material.name)
+    }
+    const dataId = material.externalId?.match(/^material:(\d+)$/)?.[1]
+    if (!dataId) throw new UserFacingError('MATERIAL_NO_FILE_ID', '该资料缺少文件 ID，请在官方页面打开')
+    const course = store.getCourse(material.courseId)
+    if (!course?.externalId || !course.clazzId) {
+      throw new UserFacingError('MATERIAL_NO_COURSE', '资料所属课程信息不完整，请重新同步')
+    }
+    let cpi = ''
+    try {
+      cpi = new URL(course.sourceUrl ?? '').searchParams.get('cpi') ?? ''
+    } catch {
+      cpi = ''
+    }
+    if (!cpi) throw new UserFacingError('MATERIAL_NO_CPI', '课程页面缺少 cpi 参数，请重新同步课程')
+    const params = new URLSearchParams({
+      dataId,
+      classId: course.clazzId,
+      cpi,
+      courseId: course.externalId.split(':')[0] ?? course.externalId,
+      ut: 's'
+    })
+    return portal.downloadFile(`https://mooc1.chaoxing.com/coursedata/downloadData?${params.toString()}`, material.name, course.sourceUrl ?? undefined)
   })
 
   handle(IPC.entriesCreate, (_event, input) => {

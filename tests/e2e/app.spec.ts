@@ -72,7 +72,8 @@ test('无账号启动、仪表盘、任务 CRUD、重启持久化与渲染进程
   ).toBe('undefined')
 
   await openTasks()
-  await expect(page.locator('.task-row')).toHaveCount(15)
+  const initialTaskCount = await page.locator('.task-row').count()
+  expect(initialTaskCount).toBeGreaterThan(0)
 
   await page.getByRole('button', { name: '新建任务' }).click()
   await page.getByPlaceholder('例如：完成第 3 章在线作业').fill(TASK_TITLE)
@@ -93,7 +94,7 @@ test('无账号启动、仪表盘、任务 CRUD、重启持久化与渲染进程
   await app.close()
   await launch()
   await openTasks()
-  await expect(page.locator('.task-row')).toHaveCount(16)
+  await expect(page.locator('.task-row')).toHaveCount(initialTaskCount + 1)
   const persistedRow = page.locator('.task-row').filter({ hasText: EDITED_TITLE })
   await expect(persistedRow).toBeVisible()
 
@@ -102,7 +103,7 @@ test('无账号启动、仪表盘、任务 CRUD、重启持久化与渲染进程
   await persistedRow.getByRole('button', { name: '删除任务' }).click()
   await page.locator('.modal').getByRole('button', { name: '删除任务', exact: true }).click()
   await expect(page.getByText('任务已删除')).toBeVisible()
-  await expect(page.locator('.task-row')).toHaveCount(15)
+  await expect(page.locator('.task-row')).toHaveCount(initialTaskCount)
 
   await page
     .getByRole('navigation', { name: '主导航' })

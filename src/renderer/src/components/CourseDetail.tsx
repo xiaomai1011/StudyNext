@@ -1,4 +1,4 @@
-import { BookOpen, ExternalLink, GraduationCap, MapPin, Star, UserRound } from 'lucide-react'
+import { BookOpen, ExternalLink, GraduationCap, MapPin, RefreshCw, Star, UserRound } from 'lucide-react'
 import type { Course } from '@shared/types'
 import { Modal } from './Modal'
 import { courseInitial } from '../lib/format'
@@ -10,13 +10,15 @@ interface CourseDetailProps {
   onClose: () => void
   onToggleFavorite: () => void
   onOpenOfficial: () => void
+  onRetryCourse: () => void
 }
 
 export function CourseDetail({
   course,
   onClose,
   onToggleFavorite,
-  onOpenOfficial
+  onOpenOfficial,
+  onRetryCourse
 }: CourseDetailProps) {
   return (
     <Modal
@@ -30,6 +32,9 @@ export function CourseDetail({
             {course.favorite ? '取消收藏' : '收藏课程'}
           </button>
           <span className="spacer" />
+          <button type="button" className="btn small" onClick={onRetryCourse}>
+            <RefreshCw size={14} /> 同步此课程
+          </button>
           <button type="button" className="btn small" onClick={onClose}>
             关闭
           </button>
@@ -76,6 +81,14 @@ export function CourseDetail({
             <BookOpen size={13} /> {course.category}
           </div>
         </div>
+        {course.clazzId ? (
+          <div className="detail-item">
+            <div className="detail-item-label">教学班</div>
+            <div className="detail-item-value" title={`教学班 ID：${course.clazzId}`}>
+              {course.className || `教学班 ${course.clazzId}`}
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="agenda-section-title" style={{ marginTop: 20 }}>

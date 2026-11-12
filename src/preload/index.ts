@@ -13,6 +13,7 @@ import type {
   ImportResult,
   OfficialEntry,
   OfficialEntryInput,
+  PortalDownload,
   PortalSecurityState,
   PortalState,
   QuestionCard,
@@ -21,6 +22,7 @@ import type {
   ReminderFiredEvent,
   SnapshotImportResult,
   StudyNextApi,
+  SyncProgressEvent,
   SyncStatus,
   Task,
   TaskChange,
@@ -49,6 +51,9 @@ const api: StudyNextApi = {
   courses: {
     setFavorite: (id: string, favorite: boolean) =>
       ipcRenderer.invoke(IPC.coursesSetFavorite, id, favorite) as Promise<Course>
+  },
+  materials: {
+    download: (id: string) => ipcRenderer.invoke(IPC.materialsDownload, id) as Promise<void>
   },
   study: {
     setPointCompleted: (id: string, completed: boolean) =>
@@ -91,7 +96,20 @@ const api: StudyNextApi = {
   chaoxing: {
     status: () => ipcRenderer.invoke(IPC.chaoxingStatus) as Promise<ChaoxingSessionStatus>,
     check: () => ipcRenderer.invoke(IPC.chaoxingCheck) as Promise<ChaoxingSessionStatus>,
-    sync: () => ipcRenderer.invoke(IPC.chaoxingSync) as Promise<ChaoxingSessionStatus>,
+    sync: (force?: boolean) =>
+      ipcRenderer.invoke(IPC.chaoxingSync, force === true) as Promise<ChaoxingSessionStatus>,
+    retryCourse: (courseId: string) =>
+      ipcRenderer.invoke(IPC.chaoxingRetryCourse, courseId) as Promise<ChaoxingSessionStatus>,
+    cancel: () => ipcRenderer.invoke(IPC.chaoxingCancel) as Promise<ChaoxingSessionStatus>,
+    onSyncProgress: (callback: (event: SyncProgressEvent) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: SyncProgressEvent): void => {
+        callback(payload)
+      }
+      ipcRenderer.on(IPC.chaoxingSyncProgress, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.chaoxingSyncProgress, listener)
+      }
+    },
     credentialsStatus: () =>
       ipcRenderer.invoke(IPC.chaoxingCredentialsStatus) as Promise<ChaoxingCredentialStatus>,
     saveCredentials: (input) =>
@@ -105,6 +123,7 @@ const api: StudyNextApi = {
   },
   portal: {
     open: (entryId: string) => ipcRenderer.invoke(IPC.portalOpen, entryId) as Promise<void>,
+    openUrl: (url: string) => ipcRenderer.invoke(IPC.portalOpenUrl, url) as Promise<void>,
     close: () => ipcRenderer.invoke(IPC.portalClose) as Promise<void>,
     state: () => ipcRenderer.invoke(IPC.portalState) as Promise<PortalState>,
     back: () => ipcRenderer.invoke(IPC.portalBack) as Promise<void>,
@@ -117,6 +136,22 @@ const api: StudyNextApi = {
       ipcRenderer.invoke(IPC.portalSecurityState) as Promise<PortalSecurityState>,
     setBounds: (bounds: { x: number; y: number; width: number; height: number }) =>
       ipcRenderer.invoke(IPC.portalSetBounds, bounds) as Promise<void>,
+    downloads: () => ipcRenderer.invoke(IPC.portalDownloads) as Promise<PortalDownload[]>,
+    download: (url: string) =>
+      ipcRenderer.invoke(IPC.portalDownload, url) as Promise<void>,
+    openDownload: (id: string) =>
+      ipcRenderer.invoke(IPC.portalOpenDownload, id) as Promise<void>,
+    revealDownload: (id: string) =>
+      ipcRenderer.invoke(IPC.portalRevealDownload, id) as Promise<void>,
+    cancelDownload: (id: string) =>
+      ipcRenderer.invoke(IPC.portalCancelDownload, id) as Promise<void>,
+    clearDownloads: () => ipcRenderer.invoke(IPC.portalClearDownloads) as Promise<void>,
+    downloadDirectory: () =>
+      ipcRenderer.invoke(IPC.portalDownloadDirectory) as Promise<string>,
+    chooseDownloadDirectory: () =>
+      ipcRenderer.invoke(IPC.portalChooseDownloadDirectory) as Promise<string | null>,
+    onDownload: (callback: (item: PortalDownload) => void) =>
+      subscribe<PortalDownload>(IPC.portalDownloadEvent, callback),
     onState: (callback: (state: PortalState) => void) =>
       subscribe<PortalState>(IPC.eventPortalState, callback)
   },

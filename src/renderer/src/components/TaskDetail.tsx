@@ -5,7 +5,7 @@ import {
   CalendarClock,
   CheckCircle2,
   Circle,
-  ExternalLink,
+  Monitor,
   Pencil,
   Trash2
 } from 'lucide-react'
@@ -26,11 +26,20 @@ interface TaskDetailProps {
   course: Course | null
   onClose: () => void
   onEdit: () => void
+  onOpenInPortal: () => void
   onDelete: () => void
   onToggle: () => Promise<void>
 }
 
-export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }: TaskDetailProps) {
+export function TaskDetail({
+  task,
+  course,
+  onClose,
+  onEdit,
+  onOpenInPortal,
+  onDelete,
+  onToggle
+}: TaskDetailProps) {
   const [busy, setBusy] = useState(false)
   const [history, setHistory] = useState<TaskChange[]>([])
   const done = task.status === 'done'
@@ -75,12 +84,8 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
           </button>
           <span className="spacer" />
           {task.sourceUrl ? (
-            <button
-              type="button"
-              className="btn small"
-              onClick={() => void window.studynext.app.openExternal(task.sourceUrl as string)}
-            >
-              <ExternalLink size={14} /> 打开学习通原页
+            <button type="button" className="btn small" onClick={onOpenInPortal}>
+              <Monitor size={14} /> 在内嵌页面打开
             </button>
           ) : null}
           <button type="button" className="btn small" onClick={onEdit}>
@@ -173,6 +178,27 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
                   : '平台未提供')}
           </div>
         </div>
+        {task.submittedAt ? (
+          <div className="detail-item">
+            <div className="detail-item-label">提交时间</div>
+            <div className="detail-item-value">{formatDateTime(task.submittedAt)}</div>
+          </div>
+        ) : null}
+        {task.score || task.fullScore ? (
+          <div className="detail-item">
+            <div className="detail-item-label">成绩</div>
+            <div className="detail-item-value">
+              {task.score ?? '未出分'}
+              {task.fullScore ? ` / ${task.fullScore}` : ''}
+            </div>
+          </div>
+        ) : null}
+        {task.teacherFeedback ? (
+          <div className="detail-item">
+            <div className="detail-item-label">教师批语</div>
+            <div className="detail-item-value">{task.teacherFeedback}</div>
+          </div>
+        ) : null}
         <div className="detail-item">
           <div className="detail-item-label">完成方式</div>
           <div className="detail-item-value">

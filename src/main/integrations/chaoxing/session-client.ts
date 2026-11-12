@@ -47,6 +47,27 @@ export class PortalSessionHttpClient implements SessionHttpClient {
     if (!isAllowedPortalUrl(input.url)) {
       throw new Error('请求地址不在学习通白名单内')
     }
+    const method = input.method ?? 'GET'
+    const maxAttempts = method === 'GET' ? 2 : 1
+    let lastError: unknown = null
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      try {
+        const response = await this.requestOnce(input)
+        if (method === 'GET' && response.status >= 500 && attempt + 1 < maxAttempts) {
+          await delay(400)
+          continue
+        }
+        return response
+      } catch (error) {
+        lastError = error
+        if (attempt + 1 >= maxAttempts) break
+        await delay(400)
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error('学习通请求失败')
+  }
+
+  private async requestOnce(input: SessionHttpRequest): Promise<SessionHttpResponse> {
     const transport = input.transport ?? 'session_fetch'
     if (transport === 'net_request') {
       return this.requestWithNet(input)
@@ -194,4 +215,8 @@ async function readLimitedBody(response: Response): Promise<string> {
     offset += Math.min(chunk.byteLength, remaining)
   }
   return new TextDecoder('utf-8').decode(merged)
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

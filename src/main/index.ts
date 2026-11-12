@@ -11,6 +11,7 @@ import {
   Tray
 } from 'electron'
 import { APP_ID, APP_NAME } from '@shared/constants'
+import { IPC } from '@shared/ipc'
 import type {
   AppNotice,
   AppSettings,
@@ -109,10 +110,19 @@ async function initialize(): Promise<void> {
     new ChaoxingSessionAdapter(
       undefined,
       () => (portal ? portal.ensureCoursePageHtml() : Promise.resolve(null)),
-      () => (portal ? portal.readScheduleFromPage() : Promise.resolve(null))
+      () => (portal ? portal.readScheduleFromPage() : Promise.resolve(null)),
+      () => (portal ? portal.readExamListFromPage() : Promise.resolve(null)),
+      (courseUrl) => (portal ? portal.readChapterHtml(courseUrl) : Promise.resolve(null)),
+      () => (portal ? portal.readNoticeListFromPage() : Promise.resolve(null)),
+      (courseUrl) => (portal ? portal.readMaterialHtml(courseUrl) : Promise.resolve(null))
     ),
     (outcome) => {
       sync.recordSessionResult(outcome)
+    },
+    (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC.chaoxingSyncProgress, event)
+      }
     }
   )
   const ai = new AiService(store)

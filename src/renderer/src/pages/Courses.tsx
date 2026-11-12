@@ -10,9 +10,10 @@ interface CoursesProps {
   courses: Course[]
   onToggleFavorite: (course: Course) => Promise<void>
   onOpenOfficial: () => void
+  onRetryCourse: (course: Course) => Promise<void>
 }
 
-export function Courses({ courses, onToggleFavorite, onOpenOfficial }: CoursesProps) {
+export function Courses({ courses, onToggleFavorite, onOpenOfficial, onRetryCourse }: CoursesProps) {
   const [query, setQuery] = useState('')
   const [category, setCategory] = useState('全部')
   const [favoritesOnly, setFavoritesOnly] = useState(false)
@@ -25,6 +26,13 @@ export function Courses({ courses, onToggleFavorite, onOpenOfficial }: CoursesPr
     ],
     [courses]
   )
+  const nameCounts = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const course of courses) {
+      counts.set(course.name, (counts.get(course.name) ?? 0) + 1)
+    }
+    return counts
+  }, [courses])
   const filtered = useMemo(() => {
     const normalized = query.trim().toLocaleLowerCase()
     return courses.filter((course) => {
@@ -164,6 +172,11 @@ export function Courses({ courses, onToggleFavorite, onOpenOfficial }: CoursesPr
                 >
                   <UserRound size={10} /> {course.teacher}
                 </span>
+                {course.clazzId && (nameCounts.get(course.name) ?? 0) > 1 ? (
+                  <span className="course-tag" title={`教学班 ID：${course.clazzId}`}>
+                    教学班 {course.className || course.clazzId}
+                  </span>
+                ) : null}
               </div>
 
               <div className="course-schedule">
@@ -195,6 +208,11 @@ export function Courses({ courses, onToggleFavorite, onOpenOfficial }: CoursesPr
           onOpenOfficial={() => {
             setSelectedId(null)
             onOpenOfficial()
+          }}
+          onRetryCourse={() => {
+            const course = selected
+            setSelectedId(null)
+            void onRetryCourse(course)
           }}
         />
       ) : null}

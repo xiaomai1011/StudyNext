@@ -10,14 +10,18 @@ import {
 } from '@shared/constants'
 import { normalizeReminderOffsets } from '@shared/domain'
 import type {
+  AppNotice,
   AppSettings,
   Chapter,
   Course,
   CourseSession,
   DataSource,
+  Exam,
+  Material,
   OfficialEntry,
   OfficialEntryInput,
   PlatformStatusKind,
+  PortalDownload,
   QuestionCard,
   QuestionInput,
   QuestionSource,
@@ -45,6 +49,8 @@ interface CourseRow {
   category: string
   color: string
   favorite: number
+  clazz_id: string | null
+  class_name: string | null
   schedule_json: string
   semester_start: string | null
   max_week: number
@@ -52,6 +58,49 @@ interface CourseRow {
   source_url: string | null
   created_at: string
   updated_at: string
+}
+
+interface ExamRow {
+  id: string
+  external_id: string
+  title: string
+  course_name: string | null
+  start_at: string | null
+  end_at: string | null
+  duration_minutes: number | null
+  exam_status: string
+  answer_status: string
+  score: string | null
+  mode: string | null
+  source_url: string | null
+  source: string
+  updated_at: string
+}
+
+interface MaterialRow {
+  id: string
+  course_id: string
+  external_id: string
+  name: string
+  kind: string
+  file_type: string | null
+  size: string | null
+  url: string | null
+  source_url: string | null
+  source: string
+  updated_at: string
+}
+
+interface DownloadRow {
+  id: string
+  filename: string
+  url: string
+  state: string
+  received_bytes: number
+  total_bytes: number
+  started_at: string
+  completed_at: string | null
+  save_path: string | null
 }
 
 interface TaskRow {
@@ -71,6 +120,10 @@ interface TaskRow {
   source_url: string | null
   platform_status: string | null
   platform_status_kind: string
+  submitted_at: string | null
+  score: string | null
+  full_score: string | null
+  teacher_feedback: string | null
   manual_fields_json: string
   field_sources_json: string
   created_at: string
@@ -163,6 +216,8 @@ CREATE TABLE IF NOT EXISTS courses (
   category TEXT NOT NULL DEFAULT '其他',
   color TEXT NOT NULL,
   favorite INTEGER NOT NULL DEFAULT 0 CHECK (favorite IN (0, 1)),
+  clazz_id TEXT,
+  class_name TEXT,
   schedule_json TEXT NOT NULL DEFAULT '[]',
   semester_start TEXT,
   max_week INTEGER NOT NULL DEFAULT 0,
@@ -240,6 +295,10 @@ CREATE TABLE IF NOT EXISTS tasks (
   source_url TEXT,
   platform_status TEXT,
   platform_status_kind TEXT NOT NULL DEFAULT 'unknown',
+  submitted_at TEXT,
+  score TEXT,
+  full_score TEXT,
+  teacher_feedback TEXT,
   manual_fields_json TEXT NOT NULL DEFAULT '[]',
   field_sources_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
@@ -249,6 +308,71 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external
   ON tasks(source, external_id) WHERE external_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, due_at);
+
+CREATE TABLE IF NOT EXISTS exams (
+  id TEXT PRIMARY KEY,
+  external_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  course_name TEXT,
+  start_at TEXT,
+  end_at TEXT,
+  duration_minutes INTEGER,
+  exam_status TEXT NOT NULL DEFAULT '',
+  answer_status TEXT NOT NULL DEFAULT '',
+  score TEXT,
+  mode TEXT,
+  source_url TEXT,
+  source TEXT NOT NULL DEFAULT 'chaoxing',
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_exams_external ON exams(source, external_id);
+CREATE INDEX IF NOT EXISTS idx_exams_start ON exams(start_at);
+
+CREATE TABLE IF NOT EXISTS materials (
+  id TEXT PRIMARY KEY,
+  course_id TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'file',
+  file_type TEXT,
+  size TEXT,
+  url TEXT,
+  source_url TEXT,
+  source TEXT NOT NULL DEFAULT 'chaoxing',
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_materials_external ON materials(course_id, external_id);
+CREATE INDEX IF NOT EXISTS idx_materials_course ON materials(course_id, kind, name);
+
+CREATE TABLE IF NOT EXISTS downloads (
+  id TEXT PRIMARY KEY,
+  filename TEXT NOT NULL,
+  url TEXT NOT NULL,
+  state TEXT NOT NULL,
+  received_bytes INTEGER NOT NULL DEFAULT 0,
+  total_bytes INTEGER NOT NULL DEFAULT 0,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  save_path TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_downloads_started ON downloads(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS app_notices (
+  id TEXT PRIMARY KEY,
+  external_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  category TEXT NOT NULL DEFAULT 'notice',
+  sender TEXT,
+  course_name TEXT,
+  published_at TEXT NOT NULL,
+  is_read INTEGER,
+  url TEXT,
+  source TEXT NOT NULL DEFAULT 'chaoxing',
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_notices_external ON app_notices(source, external_id);
+CREATE INDEX IF NOT EXISTS idx_notices_published ON app_notices(published_at DESC);
 
 CREATE TABLE IF NOT EXISTS task_change_log (
   id TEXT PRIMARY KEY,
@@ -596,6 +720,8 @@ export class StudyNextStore {
     }
     addCourseColumn('semester_start', 'TEXT')
     addCourseColumn('max_week', 'INTEGER NOT NULL DEFAULT 0')
+    addCourseColumn('clazz_id', 'TEXT')
+    addCourseColumn('class_name', 'TEXT')
     const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all() as unknown as Array<{
       name: string
     }>
@@ -609,6 +735,10 @@ export class StudyNextStore {
     addTaskColumn('source_url', 'TEXT')
     addTaskColumn('platform_status', 'TEXT')
     addTaskColumn('platform_status_kind', "TEXT NOT NULL DEFAULT 'unknown'")
+    addTaskColumn('submitted_at', 'TEXT')
+    addTaskColumn('score', 'TEXT')
+    addTaskColumn('full_score', 'TEXT')
+    addTaskColumn('teacher_feedback', 'TEXT')
     addTaskColumn('manual_fields_json', "TEXT NOT NULL DEFAULT '[]'")
     addTaskColumn('field_sources_json', "TEXT NOT NULL DEFAULT '{}'")
     this.db.exec(`
@@ -877,6 +1007,292 @@ export class StudyNextStore {
     return rows.map(mapCourseRow)
   }
 
+  listExams(): Exam[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM exams
+         ORDER BY CASE WHEN start_at IS NULL THEN 1 ELSE 0 END ASC, start_at DESC, title ASC`
+      )
+      .all() as unknown as ExamRow[]
+    return rows.map(mapExamRow)
+  }
+
+  listMaterials(): Material[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM materials
+         ORDER BY course_id ASC, CASE kind WHEN 'folder' THEN 0 ELSE 1 END ASC, name COLLATE NOCASE ASC`
+      )
+      .all() as unknown as MaterialRow[]
+    return rows.map(mapMaterialRow)
+  }
+
+  replaceProviderMaterials(
+    courseId: string,
+    items: Array<{
+      externalId: string
+      name: string
+      kind: 'folder' | 'file' | 'link'
+      fileType?: string | null
+      size?: string | null
+      url?: string | null
+      sourceUrl?: string | null
+    }>,
+    source: DataSource = 'chaoxing'
+  ): number {
+    const now = new Date().toISOString()
+    const insert = this.db.prepare(
+      `INSERT INTO materials
+        (id, course_id, external_id, name, kind, file_type, size, url, source_url, source, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(course_id, external_id) DO UPDATE SET
+         name = excluded.name,
+         kind = excluded.kind,
+         file_type = excluded.file_type,
+         size = excluded.size,
+         url = excluded.url,
+         source_url = excluded.source_url,
+         source = excluded.source,
+         updated_at = excluded.updated_at`
+    )
+    for (const item of items) {
+      insert.run(
+        randomUUID(),
+        courseId,
+        item.externalId,
+        item.name,
+        item.kind,
+        item.fileType ?? null,
+        item.size ?? null,
+        item.url ?? null,
+        item.sourceUrl ?? null,
+        source,
+        now
+      )
+    }
+    return items.length
+  }
+
+  listDownloads(limit = 100): PortalDownload[] {
+    const rows = this.db
+      .prepare('SELECT * FROM downloads ORDER BY started_at DESC LIMIT ?')
+      .all(limit) as unknown as DownloadRow[]
+    return rows.map((row) => ({
+      id: row.id,
+      filename: row.filename,
+      url: row.url,
+      state: row.state as PortalDownload['state'],
+      receivedBytes: row.received_bytes,
+      totalBytes: row.total_bytes,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      ...(row.save_path ? { savePath: row.save_path } : {})
+    }))
+  }
+
+  upsertDownload(item: PortalDownload): void {
+    this.db
+      .prepare(
+        `INSERT INTO downloads
+          (id, filename, url, state, received_bytes, total_bytes, started_at, completed_at, save_path)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           filename = excluded.filename,
+           url = excluded.url,
+           state = excluded.state,
+           received_bytes = excluded.received_bytes,
+           total_bytes = excluded.total_bytes,
+           started_at = excluded.started_at,
+           completed_at = excluded.completed_at,
+           save_path = excluded.save_path`
+      )
+      .run(
+        item.id,
+        item.filename,
+        item.url,
+        item.state,
+        item.receivedBytes,
+        item.totalBytes,
+        item.startedAt,
+        item.completedAt,
+        item.savePath ?? null
+      )
+  }
+
+  deleteFinishedDownloads(ids: string[]): void {
+    if (ids.length === 0) return
+    const statement = this.db.prepare('DELETE FROM downloads WHERE id = ?')
+    this.transaction(() => {
+      for (const id of ids) statement.run(id)
+    })
+  }
+
+  listNotices(limit = 50): AppNotice[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM app_notices ORDER BY published_at DESC, title ASC LIMIT ?`
+      )
+      .all(limit) as unknown as Array<{
+      id: string
+      title: string
+      body: string
+      category: string
+      sender: string | null
+      course_name: string | null
+      published_at: string
+      is_read: number | null
+      url: string | null
+      source: DataSource
+    }>
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      body: row.body,
+      category: (row.category === 'course' || row.category === 'system' ? row.category : 'notice'),
+      publishedAt: row.published_at,
+      isDemo: false,
+      source: row.source,
+      sender: row.sender,
+      courseName: row.course_name,
+      read: row.is_read === null ? null : row.is_read === 1,
+      url: row.url
+    }))
+  }
+
+  upsertProviderNotice(
+    input: {
+      externalId: string
+      title: string
+      body: string
+      category?: 'course' | 'system' | 'notice'
+      sender?: string | null
+      courseName?: string | null
+      publishedAt: string
+      read?: boolean | null
+      url?: string | null
+    },
+    source: DataSource = 'chaoxing'
+  ): { created: boolean } {
+    const existing = this.db
+      .prepare('SELECT id FROM app_notices WHERE source = ? AND external_id = ? LIMIT 1')
+      .get(source, input.externalId) as { id: string } | undefined
+    const now = new Date().toISOString()
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE app_notices SET title = ?, body = ?, category = ?, sender = ?, course_name = ?,
+             published_at = ?, is_read = ?, url = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(
+          input.title,
+          input.body,
+          input.category ?? 'notice',
+          input.sender ?? null,
+          input.courseName ?? null,
+          input.publishedAt,
+          input.read === undefined || input.read === null ? null : input.read ? 1 : 0,
+          input.url ?? null,
+          now,
+          existing.id
+        )
+      return { created: false }
+    }
+    this.db
+      .prepare(
+        `INSERT INTO app_notices
+          (id, external_id, title, body, category, sender, course_name, published_at, is_read, url, source, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        randomUUID(),
+        input.externalId,
+        input.title,
+        input.body,
+        input.category ?? 'notice',
+        input.sender ?? null,
+        input.courseName ?? null,
+        input.publishedAt,
+        input.read === undefined || input.read === null ? null : input.read ? 1 : 0,
+        input.url ?? null,
+        source,
+        now
+      )
+    return { created: true }
+  }
+
+  upsertProviderExam(
+    input: {
+      externalId: string
+      title: string
+      courseName?: string | null
+      startAt?: string | null
+      endAt?: string | null
+      durationMinutes?: number | null
+      examStatus?: string
+      answerStatus?: string
+      score?: string | null
+      mode?: string | null
+      sourceUrl?: string | null
+    },
+    source: DataSource = 'chaoxing'
+  ): { exam: Exam; created: boolean } {
+    const existing = this.db
+      .prepare('SELECT * FROM exams WHERE source = ? AND external_id = ?')
+      .get(source, input.externalId) as ExamRow | undefined
+    const now = new Date().toISOString()
+    if (existing) {
+      this.db
+        .prepare(
+          `UPDATE exams SET title = ?, course_name = ?, start_at = ?, end_at = ?,
+             duration_minutes = ?, exam_status = ?, answer_status = ?, score = ?, mode = ?,
+             source_url = ?, updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          input.title,
+          input.courseName ?? existing.course_name,
+          input.startAt !== undefined ? input.startAt : existing.start_at,
+          input.endAt !== undefined ? input.endAt : existing.end_at,
+          input.durationMinutes !== undefined ? input.durationMinutes : existing.duration_minutes,
+          input.examStatus ?? existing.exam_status,
+          input.answerStatus ?? existing.answer_status,
+          input.score !== undefined ? input.score : existing.score,
+          input.mode !== undefined ? input.mode : existing.mode,
+          input.sourceUrl !== undefined ? input.sourceUrl : existing.source_url,
+          now,
+          existing.id
+        )
+      const exam = this.db.prepare('SELECT * FROM exams WHERE id = ?').get(existing.id) as unknown as ExamRow
+      return { exam: mapExamRow(exam), created: false }
+    }
+    const id = randomUUID()
+    this.db
+      .prepare(
+        `INSERT INTO exams
+          (id, external_id, title, course_name, start_at, end_at, duration_minutes,
+           exam_status, answer_status, score, mode, source_url, source, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.externalId,
+        input.title,
+        input.courseName ?? null,
+        input.startAt ?? null,
+        input.endAt ?? null,
+        input.durationMinutes ?? null,
+        input.examStatus ?? '',
+        input.answerStatus ?? '',
+        input.score ?? null,
+        input.mode ?? null,
+        input.sourceUrl ?? null,
+        source,
+        now
+      )
+    const exam = this.db.prepare('SELECT * FROM exams WHERE id = ?').get(id) as unknown as ExamRow
+    return { exam: mapExamRow(exam), created: true }
+  }
+
   getCourse(id: string): Course | null {
     const row = this.db.prepare('SELECT * FROM courses WHERE id = ?').get(id) as
       | CourseRow
@@ -1047,6 +1463,8 @@ export class StudyNextStore {
       teacher: string
       semester?: string
       sourceUrl: string | null
+      clazzId?: string | null
+      className?: string | null
       schedule?: CourseSession[]
       semesterStart?: string | null
       maxWeek?: number
@@ -1061,7 +1479,7 @@ export class StudyNextStore {
       this.db
         .prepare(
           `UPDATE courses SET name = ?, teacher = ?, semester = ?, source_url = ?,
-             schedule_json = ?, semester_start = ?, max_week = ?, updated_at = ?
+             clazz_id = ?, class_name = ?, schedule_json = ?, semester_start = ?, max_week = ?, updated_at = ?
            WHERE id = ?`
         )
         .run(
@@ -1069,6 +1487,8 @@ export class StudyNextStore {
           input.teacher.trim() || existing.teacher,
           input.semester?.trim() || existing.semester,
           input.sourceUrl,
+          input.clazzId !== undefined ? input.clazzId : (existing.clazzId ?? null),
+          input.className !== undefined ? input.className : (existing.className ?? null),
           scheduleValue,
           input.semesterStart !== undefined ? input.semesterStart : (existing.semesterStart ?? null),
           input.maxWeek !== undefined ? input.maxWeek : (existing.maxWeek ?? 0),
@@ -1086,8 +1506,8 @@ export class StudyNextStore {
       .prepare(
         `INSERT INTO courses
           (id, external_id, name, code, teacher, semester, category, color, favorite,
-           schedule_json, semester_start, max_week, source, source_url, created_at, updated_at)
-         VALUES (?, ?, ?, '', ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?)`
+           clazz_id, class_name, schedule_json, semester_start, max_week, source, source_url, created_at, updated_at)
+         VALUES (?, ?, ?, '', ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1097,6 +1517,8 @@ export class StudyNextStore {
         input.semester?.trim() || currentSemesterLabel(),
         '学习通',
         color,
+        input.clazzId ?? null,
+        input.className ?? null,
         JSON.stringify(input.schedule ?? []),
         input.semesterStart ?? null,
         input.maxWeek ?? 0,
@@ -1116,13 +1538,13 @@ export class StudyNextStore {
     title: string
     sortOrder: number
     progress: number
-  }): { chapter: Chapter; created: boolean } {
+  }, source: DataSource = 'import'): { chapter: Chapter; created: boolean } {
     const now = new Date().toISOString()
     const existing = this.db
       .prepare(
-        "SELECT * FROM course_chapters WHERE course_id = ? AND source = 'import' AND external_id = ? LIMIT 1"
+        'SELECT * FROM course_chapters WHERE course_id = ? AND source = ? AND external_id = ? LIMIT 1'
       )
-      .get(input.courseId, input.externalId) as ChapterRow | undefined
+      .get(input.courseId, source, input.externalId) as ChapterRow | undefined
     if (existing) {
       this.db
         .prepare(
@@ -1150,7 +1572,7 @@ export class StudyNextStore {
         INSERT INTO course_chapters
           (id, course_id, external_id, title, sort_order, progress, last_studied_at,
            source, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, 'import', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
       `
       )
       .run(
@@ -1160,6 +1582,7 @@ export class StudyNextStore {
         input.title.trim(),
         input.sortOrder,
         clampProgress(input.progress),
+        source,
         now,
         now
       )
@@ -1177,14 +1600,14 @@ export class StudyNextStore {
     completed: boolean
     durationMinutes: number | null
     sortOrder: number
-  }): { point: StudyPoint; created: boolean } {
+  }, source: DataSource = 'import'): { point: StudyPoint; created: boolean } {
     const now = new Date().toISOString()
     const status = input.completed ? 'done' : 'todo'
     const existing = this.db
       .prepare(
-        "SELECT * FROM study_points WHERE course_id = ? AND source = 'import' AND external_id = ? LIMIT 1"
+        'SELECT * FROM study_points WHERE course_id = ? AND source = ? AND external_id = ? LIMIT 1'
       )
-      .get(input.courseId, input.externalId) as StudyPointRow | undefined
+      .get(input.courseId, source, input.externalId) as StudyPointRow | undefined
     if (existing) {
       this.db
         .prepare(
@@ -1216,7 +1639,7 @@ export class StudyNextStore {
         INSERT INTO study_points
           (id, chapter_id, course_id, external_id, title, kind, status, duration_minutes,
            sort_order, source, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'import', ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -1229,6 +1652,7 @@ export class StudyNextStore {
         status,
         input.durationMinutes,
         input.sortOrder,
+        source,
         now,
         now
       )
@@ -1400,6 +1824,10 @@ export class StudyNextStore {
       completionSource?: TaskCompletionSource | null
       platformStatus?: string | null
       platformStatusKind?: PlatformStatusKind
+      submittedAt?: string | null
+      score?: string | null
+      fullScore?: string | null
+      teacherFeedback?: string | null
       fieldSources?: Partial<Record<TaskField, DataSource>>
       manualFields?: TaskField[]
     } = {}
@@ -1423,8 +1851,9 @@ export class StudyNextStore {
           INSERT INTO tasks
             (id, title, description, course_id, priority, kind, status, due_at, completed_at,
              completion_source, source, external_id, source_updated_at, source_url, platform_status,
-             platform_status_kind, manual_fields_json, field_sources_json, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             platform_status_kind, submitted_at, score, full_score, teacher_feedback,
+             manual_fields_json, field_sources_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         )
         .run(
@@ -1444,6 +1873,10 @@ export class StudyNextStore {
           input.sourceUrl ?? null,
           options.platformStatus ?? null,
           options.platformStatusKind ?? 'unknown',
+          options.submittedAt ?? null,
+          options.score ?? null,
+          options.fullScore ?? null,
+          options.teacherFeedback ?? null,
           JSON.stringify(manualFields),
           JSON.stringify(fieldSources),
           now,
@@ -1555,6 +1988,10 @@ export class StudyNextStore {
       sourceUpdatedAt?: string | null
       platformStatus?: string | null
       platformStatusKind?: PlatformStatusKind
+      submittedAt?: string | null
+      score?: string | null
+      fullScore?: string | null
+      teacherFeedback?: string | null
     }
   ): ImportedTaskUpsertResult {
     const source = options.source ?? 'import'
@@ -1572,6 +2009,12 @@ export class StudyNextStore {
             : {}),
           ...(options.platformStatusKind !== undefined
             ? { platformStatusKind: options.platformStatusKind }
+            : {}),
+          ...(options.submittedAt !== undefined ? { submittedAt: options.submittedAt } : {}),
+          ...(options.score !== undefined ? { score: options.score } : {}),
+          ...(options.fullScore !== undefined ? { fullScore: options.fullScore } : {}),
+          ...(options.teacherFeedback !== undefined
+            ? { teacherFeedback: options.teacherFeedback }
             : {}),
           fieldSources: fieldSourcesFor(source),
           completionSource: (input.status ?? 'todo') === 'done' ? 'platform' : null
@@ -1617,7 +2060,7 @@ export class StudyNextStore {
       this.db
         .prepare(
           `UPDATE tasks SET source_updated_at = ?, source_url = ?, platform_status = ?,
-             platform_status_kind = ?
+             platform_status_kind = ?, submitted_at = ?, score = ?, full_score = ?, teacher_feedback = ?
            WHERE id = ?`
         )
         .run(
@@ -1625,6 +2068,12 @@ export class StudyNextStore {
           input.sourceUrl !== undefined ? input.sourceUrl : existing.sourceUrl,
           options.platformStatus !== undefined ? options.platformStatus : existing.platformStatus,
           options.platformStatusKind ?? existing.platformStatusKind,
+          options.submittedAt !== undefined ? options.submittedAt : existing.submittedAt,
+          options.score !== undefined ? options.score : existing.score,
+          options.fullScore !== undefined ? options.fullScore : existing.fullScore,
+          options.teacherFeedback !== undefined
+            ? options.teacherFeedback
+            : existing.teacherFeedback,
           existing.id
         )
       if (platformChanged) {
@@ -1655,6 +2104,7 @@ export class StudyNextStore {
             title = ?, description = ?, course_id = ?, priority = ?, kind = ?, status = ?,
             due_at = ?, completed_at = ?, completion_source = ?, source_updated_at = ?,
             source_url = ?, platform_status = ?, platform_status_kind = ?, field_sources_json = ?,
+            submitted_at = ?, score = ?, full_score = ?, teacher_feedback = ?,
             updated_at = ?
           WHERE id = ?
         `
@@ -1674,6 +2124,12 @@ export class StudyNextStore {
           options.platformStatus !== undefined ? options.platformStatus : existing.platformStatus,
           options.platformStatusKind ?? existing.platformStatusKind,
           JSON.stringify(fieldSources),
+          options.submittedAt !== undefined ? options.submittedAt : existing.submittedAt,
+          options.score !== undefined ? options.score : existing.score,
+          options.fullScore !== undefined ? options.fullScore : existing.fullScore,
+          options.teacherFeedback !== undefined
+            ? options.teacherFeedback
+            : existing.teacherFeedback,
           now,
           existing.id
         )
@@ -1838,7 +2294,8 @@ export class StudyNextStore {
       defaultReminderOffsets: read('defaultReminderOffsets'),
       calendarWeekStartsOn: read('calendarWeekStartsOn'),
       catchUpMissedReminders: read('catchUpMissedReminders'),
-      trustedSsoDomains: read('trustedSsoDomains')
+      trustedSsoDomains: read('trustedSsoDomains'),
+      downloadDirectory: read('downloadDirectory')
     }
   }
 
@@ -1971,12 +2428,49 @@ function mapCourseRow(row: CourseRow): Course {
     category: row.category,
     color: row.color,
     favorite: row.favorite === 1,
+    clazzId: row.clazz_id,
+    className: row.class_name,
     schedule,
     semesterStart: row.semester_start,
     maxWeek: row.max_week,
     source: row.source as DataSource,
     sourceUrl: row.source_url,
     createdAt: row.created_at,
+    updatedAt: row.updated_at
+  }
+}
+
+function mapExamRow(row: ExamRow): Exam {
+  return {
+    id: row.id,
+    externalId: row.external_id,
+    title: row.title,
+    courseName: row.course_name,
+    startAt: row.start_at,
+    endAt: row.end_at,
+    durationMinutes: row.duration_minutes,
+    examStatus: row.exam_status,
+    answerStatus: row.answer_status,
+    score: row.score,
+    mode: row.mode,
+    sourceUrl: row.source_url,
+    source: row.source as DataSource,
+    updatedAt: row.updated_at
+  }
+}
+
+function mapMaterialRow(row: MaterialRow): Material {
+  return {
+    id: row.id,
+    courseId: row.course_id,
+    externalId: row.external_id,
+    name: row.name,
+    kind: row.kind === 'folder' || row.kind === 'link' ? row.kind : 'file',
+    fileType: row.file_type,
+    size: row.size,
+    url: row.url,
+    sourceUrl: row.source_url,
+    source: row.source as DataSource,
     updatedAt: row.updated_at
   }
 }
@@ -2067,6 +2561,10 @@ function mapTaskRow(row: TaskRow, reminders: ReminderRule[]): Task {
     sourceUrl: row.source_url ?? null,
     platformStatus: row.platform_status ?? null,
     platformStatusKind: (row.platform_status_kind as PlatformStatusKind) ?? 'unknown',
+    submittedAt: row.submitted_at ?? null,
+    score: row.score ?? null,
+    fullScore: row.full_score ?? null,
+    teacherFeedback: row.teacher_feedback ?? null,
     manualFields: parseTaskFields(row.manual_fields_json),
     fieldSources: parseTaskFieldSources(row.field_sources_json),
     createdAt: row.created_at,

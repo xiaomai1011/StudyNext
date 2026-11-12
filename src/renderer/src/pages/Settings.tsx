@@ -33,6 +33,7 @@ import type {
   OfficialEntryInput,
   PortalSecurityState,
   SnapshotImportResult,
+  SyncProgressEvent,
   SyncStatus,
   ThemeMode
 } from '@shared/types'
@@ -56,7 +57,7 @@ interface SettingsProps {
   onRemoveEntry: (entry: OfficialEntry) => Promise<void>
   onSyncRun: () => Promise<SyncStatus>
   onChaoxingCheck: () => Promise<ChaoxingSessionStatus>
-  onChaoxingSync: () => Promise<ChaoxingSessionStatus>
+  onChaoxingSync: (force?: boolean) => Promise<ChaoxingSessionStatus>
   onImported: () => Promise<void>
   notify: (kind: ToastKind, message: string) => void
 }
@@ -136,6 +137,8 @@ export function Settings({
   const [aiSaving, setAiSaving] = useState(false)
   const [confirm, setConfirm] = useState<'reset' | 'clear' | null>(null)
   const [busy, setBusy] = useState(false)
+  const [syncingChaoxing, setSyncingChaoxing] = useState(false)
+  const [syncProgress, setSyncProgress] = useState<SyncProgressEvent | null>(null)
   const [entryLabel, setEntryLabel] = useState('')
   const [entryUrl, setEntryUrl] = useState('')
   const [entryKind, setEntryKind] = useState<OfficialEntry['kind']>('custom')
@@ -180,6 +183,13 @@ export function Settings({
     return () => {
       alive = false
     }
+  }, [])
+
+  useEffect(() => {
+    const unsubscribe = window.studynext.chaoxing.onSyncProgress((event) => {
+      setSyncProgress(event)
+    })
+    return unsubscribe
   }, [])
 
   useEffect(() => {
@@ -362,8 +372,10 @@ export function Settings({
 
   const syncChaoxing = async (): Promise<void> => {
     setBusy(true)
+    setSyncingChaoxing(true)
+    setSyncProgress({ phase: 'start', message: '准备同步…', current: 0, total: 0 })
     try {
-      const status = await onChaoxingSync()
+      const status = await onChaoxingSync(true)
       if (status.authState === 'authenticated') {
         notify('success', status.message)
       } else {
@@ -373,6 +385,27 @@ export function Settings({
       notify('error', errorMessage(error))
     } finally {
       setBusy(false)
+      setSyncingChaoxing(false)
+    }
+  }
+
+  const cancelChaoxingSync = async (): Promise<void> => {
+    try {
+      await window.studynext.chaoxing.cancel()
+      notify('info', '已请求取消同步，正在等待当前请求结束。')
+    } catch (error) {
+      notify('error', errorMessage(error))
+    }
+  }
+
+  const chooseDownloadDirectory = async (): Promise<void> => {
+    try {
+      const directory = await window.studynext.portal.chooseDownloadDirectory()
+      if (!directory) return
+      await onUpdateSettings({ downloadDirectory: directory })
+      notify('success', `资料下载目录已更新：${directory}`)
+    } catch (error) {
+      notify('error', errorMessage(error))
     }
   }
 
@@ -774,6 +807,13 @@ export function Settings({
                     <strong>{chaoxing.syncedTasks}</strong>
                   </div>
                 </div>
+                {chaoxing.lastSyncAt ? (
+                  <div className="setting-desc" style={{ marginTop: 8 }}>
+                    最近一次覆盖：{chaoxing.syncedCourses} 门课程 · {chaoxing.syncedTasks} 项作业 ·{' '}
+                    {chaoxing.syncedChapters} 个章节 · {chaoxing.syncedExams} 场考试 ·{' '}
+                    {chaoxing.syncedNotices} 条通知 · {chaoxing.syncedMaterials} 个资料
+                  </div>
+                ) : null}
                 <div className="setting-desc" style={{ marginTop: 8 }}>
                   {chaoxing.message}
                   {chaoxing.detail ? ` ${chaoxing.detail}` : ''}
@@ -795,6 +835,46 @@ export function Settings({
                   >
                     <RefreshCw size={13} /> 仅同步学习通
                   </button>
+                  {syncingChaoxing ? (
+                    <button type="button" className="btn small" onClick={() => void cancelChaoxingSync()}>
+                      取消同步
+                    </button>
+                  ) : null}
+                </div>
+                <div className="setting-desc" style={{ marginTop: 8 }}>
+                  同步会切换官方页面（课程、通知、资料等）读取数据，结束后停留在最后读取的页面；应用不会自动返回原页面。
+                </div>
+                {syncProgress ? (
+                  <div className="chaoxing-progress">
+                    <span>{syncProgress.message}</span>
+                    <span>
+                      {syncProgress.total > 0
+                        ? `${syncProgress.current}/${syncProgress.total}`
+                        : ''}
+                    </span>
+                  </div>
+                ) : null}
+                <div className="setting-row">
+                  <div className="setting-copy">
+                    <div className="setting-label">资料下载目录</div>
+                    <div className="setting-desc">
+                      {settings.downloadDirectory || '默认保存在系统下载目录下的 StudyNext 文件夹'}
+                    </div>
+                  </div>
+                  <div className="chaoxing-actions">
+                    <button type="button" className="btn small" onClick={() => void chooseDownloadDirectory()}>
+                      <FolderOpen size={13} /> 选择目录
+                    </button>
+                    {settings.downloadDirectory ? (
+                      <button
+                        type="button"
+                        className="btn small"
+                        onClick={() => void onUpdateSettings({ downloadDirectory: '' })}
+                      >
+                        恢复默认
+                      </button>
+                    ) : null}
+                  </div>
                 </div>
                 <div className="chaoxing-credentials">
                   <div className="chaoxing-credentials-head">

@@ -58,6 +58,7 @@ export function Tasks({
     }),
     [visibleTasks]
   )
+  const hiddenOverdue = Math.max(0, tasks.length - visibleTasks.length)
 
   const filtered = useMemo(() => {
     const scoped = filterTasks(visibleTasks, {
@@ -167,7 +168,8 @@ export function Tasks({
           </div>
           <h1 className="page-title">任务与 DDL</h1>
           <p className="page-subtitle">
-            跨课程管理作业、考试和阅读任务。修改截止时间后会自动重排提醒。
+            同步 {tasks.length} 项 · 实际显示 {visibleTasks.length} 项 · 隐藏逾期{' '}
+            {hiddenOverdue} 项。修改截止时间后会自动重排提醒。
           </p>
         </div>
         <div className="header-actions">

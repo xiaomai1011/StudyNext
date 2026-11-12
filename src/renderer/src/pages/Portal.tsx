@@ -2,7 +2,9 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   ArrowLeft,
   ArrowRight,
+  Download,
   ExternalLink,
+  FolderOpen,
   Globe2,
   LockKeyhole,
   RefreshCw,
@@ -12,6 +14,7 @@ import {
 } from 'lucide-react'
 import type {
   OfficialEntry,
+  PortalDownload,
   PortalLoginState,
   PortalSecurityState,
   PortalState
@@ -59,6 +62,8 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
   const [boundsReady, setBoundsReady] = useState(false)
   const [confirmClear, setConfirmClear] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [downloads, setDownloads] = useState<PortalDownload[]>([])
+  const [showDownloads, setShowDownloads] = useState(false)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const api = window.studynext
 
@@ -77,9 +82,22 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
       })
       .catch(() => undefined)
     const unsubscribe = api.portal.onState((next) => setState(next))
+    const unsubscribeDownload = api.portal.onDownload((item) => {
+      setDownloads((current) => {
+        const next = current.filter((entry) => entry.id !== item.id)
+        return [item, ...next]
+      })
+    })
+    void api.portal
+      .downloads()
+      .then((items) => {
+        if (alive) setDownloads(items)
+      })
+      .catch(() => undefined)
     return () => {
       alive = false
       unsubscribe()
+      unsubscribeDownload()
       void api.portal.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -216,6 +234,18 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
         >
           <RefreshCw />
         </button>
+        <button
+          type="button"
+          className="portal-nav-btn"
+          onClick={() => setShowDownloads((value) => !value)}
+          title="下载管理器"
+          aria-label="下载管理器"
+        >
+          <Download />
+          {downloads.some((item) => item.state === 'progressing') ? (
+            <span className="portal-download-dot" />
+          ) : null}
+        </button>
         <div className="portal-url" title={state.url || '尚未打开官方页面'}>
           <ShieldCheck />
           <span>{state.displayUrl || '尚未打开官方页面'}</span>
@@ -285,6 +315,92 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
           <X />
         </button>
       </div>
+
+      {showDownloads ? (
+        <section className="portal-downloads">
+          <div className="portal-downloads-head">
+            <strong>下载管理器</strong>
+            <span>文件保存到系统“下载/StudyNext”目录；下载由隔离会话携带登录态完成。</span>
+            <button
+              type="button"
+              className="text-link"
+              disabled={downloads.every((item) => item.state === 'progressing')}
+              onClick={() => {
+                void api.portal
+                  .clearDownloads()
+                  .then(() => api.portal.downloads())
+                  .then(setDownloads)
+                  .catch((error: unknown) => notify('error', errorMessage(error)))
+              }}
+            >
+              清空已完成
+            </button>
+          </div>
+          {downloads.length === 0 ? (
+            <div className="portal-download-empty">尚无下载任务。可在资料中心点击“下载”。</div>
+          ) : (
+            <div className="portal-download-list">
+              {downloads.map((item) => {
+                const percent =
+                  item.totalBytes > 0
+                    ? Math.min(100, Math.round((item.receivedBytes / item.totalBytes) * 100))
+                    : null
+                return (
+                  <div className="portal-download-row" key={item.id}>
+                    <div className="portal-download-name" title={item.filename}>
+                      {item.filename}
+                    </div>
+                    <div className="portal-download-state">
+                      {item.state === 'progressing'
+                        ? percent === null
+                          ? `${formatBytes(item.receivedBytes)}`
+                          : `${percent}% · ${formatBytes(item.receivedBytes)} / ${formatBytes(item.totalBytes)}`
+                        : item.state === 'completed'
+                          ? `已完成 · ${formatBytes(item.receivedBytes)}`
+                          : item.state === 'cancelled'
+                            ? '已取消'
+                            : '中断'}
+                    </div>
+                    {item.state === 'progressing' ? (
+                      <div className="portal-download-progress">
+                        <span style={{ width: `${percent ?? 12}%` }} />
+                      </div>
+                    ) : null}
+                    <div className="portal-download-actions">
+                      {item.state === 'completed' ? (
+                        <>
+                          <button
+                            type="button"
+                            className="text-link"
+                            onClick={() => void api.portal.openDownload(item.id).catch((error: unknown) => notify('error', errorMessage(error)))}
+                          >
+                            打开
+                          </button>
+                          <button
+                            type="button"
+                            className="text-link"
+                            onClick={() => void api.portal.revealDownload(item.id).catch((error: unknown) => notify('error', errorMessage(error)))}
+                          >
+                            所在文件夹
+                          </button>
+                        </>
+                      ) : item.state === 'progressing' ? (
+                        <button
+                          type="button"
+                          className="text-link"
+                          onClick={() => void api.portal.cancelDownload(item.id).catch((error: unknown) => notify('error', errorMessage(error)))}
+                        >
+                          取消
+                        </button>
+                      ) : null}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      ) : null}
 
       {state.error ? (
         <div className="sync-banner" style={{ marginBottom: 10 }}>
@@ -459,4 +575,12 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
       )}
     </div>
   )
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }

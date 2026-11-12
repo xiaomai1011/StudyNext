@@ -4,6 +4,7 @@ import {
   CheckCircle2,
   Circle,
   Clock3,
+  ExternalLink,
   FileQuestion,
   FolderOpen,
   Search
@@ -87,6 +88,10 @@ export function Study({
   const totalProgress = points.length ? Math.round((totalDone / points.length) * 100) : 0
 
   const togglePoint = async (point: StudyPoint): Promise<void> => {
+    if (point.source === 'chaoxing') {
+      notify('info', '学习通任务点进度以平台为准，应用内不修改')
+      return
+    }
     if (pendingId) return
     setPendingId(point.id)
     try {
@@ -106,7 +111,7 @@ export function Study({
           <div className="eyebrow">LEARNING CENTER</div>
           <h1 className="page-title">学习中心</h1>
           <p className="page-subtitle">
-            章节、视频、测验与作业进度集中管理，数据来自你主动导入的学习快照。
+            章节、视频、测验与作业进度集中管理。学习通章节由本人 Web 会话只读同步，平台进度不可在应用内修改。
           </p>
         </div>
         <div className="header-actions">
@@ -154,7 +159,7 @@ export function Study({
           </div>
           <div className="empty-title">还没有可展示的学习进度</div>
           <div className="empty-text">
-            学习通实时接口尚未授权，当前支持导入本地 JSON 学习快照。快照只在本机解析和保存。
+            尚未同步学习通章节，当前可导入本地 JSON 学习快照。快照只在本机解析和保存。
           </div>
           <button type="button" className="btn primary" onClick={onImport}>
             <FolderOpen size={16} /> 导入学习快照
@@ -210,8 +215,19 @@ export function Study({
                   <h2>{activeStats.course.name}</h2>
                   <p>
                     {activeStats.course.teacher || '教师未填写'} · {activeStats.chapters} 个章节 ·{' '}
-                    {activeStats.points} 个学习点
+                    {activeStats.points} 个学习点 · 已完成 {activeStats.done} 个
                   </p>
+                  {activeStats.course.sourceUrl ? (
+                    <button
+                      type="button"
+                      className="btn ghost small study-official-link"
+                      onClick={() =>
+                        void window.studynext.app.openExternal(activeStats.course.sourceUrl as string)
+                      }
+                    >
+                      <ExternalLink size={14} /> 打开学习通章节
+                    </button>
+                  ) : null}
                 </div>
                 <div className="study-progress-ring" aria-label={`进度 ${activeStats.progress}%`}>
                   <strong>{activeStats.progress}%</strong>
@@ -312,6 +328,9 @@ export function Study({
                                           <span className="priority-badge low">
                                             {STUDY_POINT_LABEL[point.kind]}
                                           </span>
+                                          {point.source === 'chaoxing' ? (
+                                            <span className="priority-badge medium">平台</span>
+                                          ) : null}
                                           {point.durationMinutes ? (
                                             <span className="study-point-duration">
                                               <Clock3 size={13} />{' '}

@@ -5,6 +5,10 @@ import {
   detectLoginState,
   parseCourseFrameUrl,
   parseCourseList,
+  parseExamList,
+  parseChapterList,
+  parseMaterialList,
+  parseNoticeList,
   parseHomeworkDetail,
   parseHomeworkList,
   parseProfile,
@@ -174,6 +178,20 @@ describe('学习通页面解析', () => {
     expect(detail.deadlineText).toBe('11-27 23:59')
   })
 
+  it('解析作业详情中的提交时间、成绩与教师批语', () => {
+    const html = `
+      <div>作业详情</div><h1>实验四</h1>
+      <div>满分：100</div>
+      <div>提交时间：2026-11-01 15:02</div>
+      <div>得分：88</div>
+      <div>教师批语：思路清晰，注意边界条件。</div>`
+    const detail = parseHomeworkDetail(html)
+    expect(detail.submittedAtText).toBe('2026-11-01 15:02')
+    expect(detail.score).toBe('88')
+    expect(detail.fullScore).toBe(100)
+    expect(detail.teacherFeedback).toBe('思路清晰，注意边界条件。')
+  })
+
   it('把无年份截止时间补齐到最接近当前时间的年份', () => {
     const now = new Date('2026-11-12T12:00:00+08:00')
     expect(resolveDeadline('11-27 23:59', now)).toBe('2026-11-27T15:59:00.000Z')
@@ -210,6 +228,10 @@ function task(overrides: Partial<Task> = {}): Task {
     fieldSources: {},
     platformStatus: null,
     platformStatusKind: 'unknown',
+    submittedAt: null,
+    score: null,
+    fullScore: null,
+    teacherFeedback: null,
     createdAt: '2026-11-01T10:00:00+08:00',
     updatedAt: '2026-11-01T10:00:00+08:00',
     reminders: [],
@@ -467,7 +489,11 @@ describe('学习通会话状态机', () => {
             dueAt: '2026-11-20T15:59:00.000Z',
             platformStatus: '未提交',
             platformStatusKind: 'pending',
-            sourceUrl: null
+            sourceUrl: null,
+            submittedAt: null,
+            score: null,
+            fullScore: null,
+            teacherFeedback: null
           }
         ],
         errors: [],
@@ -486,6 +512,37 @@ describe('学习通会话状态机', () => {
       const task = store.findTaskByExternalId('chaoxing', '1001:2001:work-1')
       expect(task?.platformStatusKind).toBe('pending')
       expect(task?.dueAt).toBe('2026-11-20T15:59:00.000Z')
+    } finally {
+      store.close()
+    }
+  })
+
+  it('5 分钟内重复同步使用短期缓存，force 可强制刷新', async () => {
+    const store = new StudyNextStore(':memory:')
+    try {
+      let pulls = 0
+      const result: ChaoxingPullResult = {
+        courses: [],
+        tasks: [],
+        errors: [],
+        warnings: [],
+        checkedAt: new Date().toISOString()
+      }
+      const service = new ChaoxingSessionService(
+        store,
+        fakeAdapter({
+          pull: async () => {
+            pulls += 1
+            return result
+          }
+        })
+      )
+      await service.sync()
+      const cached = await service.sync()
+      expect(cached.message).toContain('短期缓存')
+      expect(pulls).toBe(1)
+      await service.sync(true)
+      expect(pulls).toBe(2)
     } finally {
       store.close()
     }
@@ -628,6 +685,167 @@ describe('学习通课表解析', () => {
       weeks: '1-3,5,8-9'
     })
     expect(compressWeeks([1, 2, 3, 5, 8, 9])).toBe('1-3,5,8-9')
+  })
+
+  it('解析章节目录、二级小节与任务点状态', () => {
+    const html = `
+      <div class="progress">已完成任务点: <span>3</span>/7</div>
+      <div class="catalog_num fl"><span><i><em>1</em></i></span></div>
+      <div class="catalog_name newCatalog_name"><a class="clicktitle"><span title="第一章 绪论">第一章 绪论</span></a></div>
+      <div class="chapter_item" title="1.1 课程介绍"><span class="catalog_sbar">1.1</span><i class="icon_yiwanc"></i></div>
+      <div class="chapter_item" title="1.2 学习要求"><span class="catalog_sbar">1.2</span><span class="catalog_points_yi">2</span></div>
+      <div class="catalog_num fl"><span><i><em>2</em></i></span></div>
+      <div class="catalog_name newCatalog_name"><a class="clicktitle"><span title="第二章 基础">第二章 基础</span></a></div>
+      <div class="chapter_item" title="2.1 基本概念"><span class="catalog_sbar">2.1</span><i class="icon_yiwanc"></i></div>
+      <div class="chapter_item" title="2.2 暂未开放"><span class="catalog_sbar">2.2</span>暂未开放</div>
+    `
+    const parsed = parseChapterList(html)
+    expect(parsed.done).toBe(3)
+    expect(parsed.total).toBe(7)
+    expect(parsed.chapters).toHaveLength(2)
+    expect(parsed.chapters[0]?.title).toBe('第一章 绪论')
+    expect(parsed.chapters[0]?.sections).toHaveLength(2)
+    expect(parsed.chapters[0]?.sections[0]?.completed).toBe(true)
+    expect(parsed.chapters[0]?.sections[1]?.pendingCount).toBe(2)
+    expect(parsed.chapters[1]?.sections[1]?.locked).toBe(true)
+  })
+
+  it('章节页没有节点时返回空目录', () => {
+    expect(parseChapterList('<div>暂无章节</div>')).toEqual({ chapters: [], done: 0, total: 0 })
+  })
+
+  it('解析通知列表并保留未读状态与课程归属', () => {
+    const raw = JSON.stringify({
+      status: true,
+      notices: {
+        list: [
+          {
+            uuid: '$CACG$notice-1',
+            title: '作业:《程序设计基础》实验4',
+            content: '课程名称：程序设计基础\r作业名称：实验4',
+            createrName: '学习通知',
+            sendTime: '2026-11-12 08:25:57',
+            isread: 0,
+            receiverArray: [{ name: '程序设计基础-26计科10班(智能系统)' }],
+            attachment: JSON.stringify([
+              { att_web: { url: 'https://mooc1-api.chaoxing.com/examApi/intoexamorwork?x=1' } }
+            ])
+          },
+          {
+            uuid: '$CACG$notice-2',
+            title: '系统维护通知',
+            content: '',
+            rtf_content: '<p>今晚 23:00 维护</p>',
+            sendTime: '2026-11-11 10:00:00',
+            isread: 1
+          }
+        ]
+      }
+    })
+    const parsed = parseNoticeList(raw)
+    expect(parsed).toHaveLength(2)
+    expect(parsed[0]?.read).toBe(false)
+    expect(parsed[0]?.courseName).toContain('程序设计基础')
+    expect(parsed[0]?.url).toContain('intoexamorwork')
+    expect(parsed[1]?.body).toBe('今晚 23:00 维护')
+    expect(parsed[1]?.courseName).toBeNull()
+    expect(parseNoticeList('not-json')).toEqual([])
+  })
+
+  it('解析考试列表的时间、状态和详情入口', () => {
+    const html = `
+      <table class="dataTable">
+        <tbody>
+          <tr class="dataTr">
+            <td>1</td>
+            <td><a href="/exam-ans/exam/test/examcode/examdetail?examId=88001">高等数学期中考试</a></td>
+            <td>2026-11-20 14:00 至 2026-11-20 15:40</td>
+            <td>100</td>
+            <td>待进行</td>
+            <td>未交</td>
+            <td></td>
+            <td>闭卷</td>
+            <td><a href="/exam-ans/exam/test/examcode/examdetail?examId=88001">进入</a></td>
+          </tr>
+          <tr class="dataTr">
+            <td>2</td>
+            <td>大学英语随堂测验</td>
+            <td>2026-10-12 09:00 至 2026-10-12 09:30</td>
+            <td>30</td>
+            <td>已结束</td>
+            <td>已完成</td>
+            <td>92</td>
+            <td>在线</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    `
+    const exams = parseExamList(html)
+    expect(exams).toHaveLength(2)
+    expect(exams[0]).toMatchObject({
+      externalId: '88001',
+      title: '高等数学期中考试',
+      startAt: '2026-11-20T06:00:00.000Z',
+      endAt: '2026-11-20T07:40:00.000Z',
+      durationMinutes: 100,
+      examStatus: '待进行',
+      answerStatus: '未交',
+      score: null,
+      mode: '闭卷',
+      sourceUrl: 'https://mooc1-api.chaoxing.com/exam-ans/exam/test/examcode/examdetail?examId=88001'
+    })
+    expect(exams[1]?.externalId).toMatch(/^exam:[0-9a-f]+$/)
+    expect(exams[1]?.score).toBe('92')
+  })
+
+  it('考试空列表返回空数组，缺少时间或列数的行跳过', () => {
+    expect(parseExamList('<div>暂无符合条件的考试</div>')).toEqual([])
+    expect(
+      parseExamList(
+        '<table><tr class="dataTr"><td>1</td><td>只有标题</td><td>没有时间</td></tr></table>'
+      )
+    ).toEqual([])
+  })
+
+  it('解析资料列表的文件夹、文件、外链和大小', () => {
+    const html = `
+      <div class="dataBody">
+        <ul class="dataBody_td" type="afolder" id="1372755436" dataname="课件">
+          <li class="dataBody_file" onclick="toOpen('%E8%AF%BE%E4%BB%B6','afolder',1372755436,'','','',2,1,'154619115','enc','','1794478873280','')"></li>
+          <li class="dataBody_size_stu"> - </li>
+        </ul>
+        <ul class="dataBody_td" type="doc" id="1360097062" dataname="复习测试题.doc">
+          <li class="dataBody_file" onclick="toOpen('%E5%A4%8D%E4%B9%A0%E6%B5%8B%E8%AF%95%E9%A2%98.doc','doc',1360097062,'','f06af491','',2,1,'154619115','enc','','1794478873280','')"></li>
+          <li class="dataBody_size_stu"> 47KB </li>
+        </ul>
+        <ul class="dataBody_td" type="url" id="1360097020" dataname="python模块函数">
+          <li class="dataBody_file" onclick="toOpen('python%E6%A8%A1%E5%9D%97%E5%87%BD%E6%95%B0','url',1360097020,'','','https://docs.python.org/zh-cn/3.13/py-modindex.html',2,0,'154619115','enc','','1794478873280','')"></li>
+          <li class="dataBody_size_stu"> - </li>
+        </ul>
+      </div>
+    `
+    const items = parseMaterialList(html)
+    expect(items).toHaveLength(3)
+    expect(items[0]).toMatchObject({
+      externalId: 'material:1372755436',
+      name: '课件',
+      kind: 'folder',
+      fileType: 'afolder'
+    })
+    expect(items[1]).toMatchObject({
+      externalId: 'material:1360097062',
+      name: '复习测试题.doc',
+      kind: 'file',
+      fileType: 'doc',
+      size: '47KB'
+    })
+    expect(items[2]).toMatchObject({
+      externalId: 'material:1360097020',
+      name: 'python模块函数',
+      kind: 'link',
+      url: 'https://docs.python.org/zh-cn/3.13/py-modindex.html'
+    })
   })
 
   it('按周次判断课程是否出现在某一周', () => {

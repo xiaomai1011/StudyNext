@@ -1,4 +1,4 @@
-import type { ChaoxingSessionStatus, SyncState } from '@shared/types'
+import type { ChaoxingSessionStatus, SyncProgressEvent, SyncState } from '@shared/types'
 import type { StudyNextStore } from '../../storage/store'
 import {
   ChaoxingAccessError,
@@ -8,6 +8,7 @@ import type { ChaoxingAdapterLike, ChaoxingPullResult } from './adapter'
 
 const STATUS_META_KEY = 'chaoxing_session_status'
 const STATUS_MAX_AGE_MS = 12 * 60 * 60 * 1000
+const SHORT_CACHE_MS = 5 * 60 * 1000
 
 export interface SessionSyncOutcome {
   state: Extract<SyncState, 'not_configured' | 'success' | 'partial' | 'failure'>
@@ -26,13 +27,21 @@ export interface SessionSyncOutcome {
 export class ChaoxingSessionService {
   private status: ChaoxingSessionStatus
   private syncing = false
+  private lastPullAt = 0
 
   constructor(
     private readonly store: StudyNextStore,
     private readonly adapter: ChaoxingAdapterLike = new ChaoxingSessionAdapter(),
-    private readonly onSyncOutcome: (outcome: SessionSyncOutcome) => void = () => undefined
+    private readonly onSyncOutcome: (outcome: SessionSyncOutcome) => void = () => undefined,
+    private readonly onProgress: (event: SyncProgressEvent) => void = () => undefined
   ) {
     this.status = this.readStatus()
+    this.adapter.onProgress = onProgress
+  }
+
+  cancel(): ChaoxingSessionStatus {
+    this.adapter.cancel?.()
+    return this.getStatus()
   }
 
   getStatus(): ChaoxingSessionStatus {
@@ -84,8 +93,23 @@ export class ChaoxingSessionService {
     return this.getStatus()
   }
 
-  async sync(): Promise<ChaoxingSessionStatus> {
+  async sync(force = false): Promise<ChaoxingSessionStatus> {
     if (this.syncing) return this.getStatus()
+    if (
+      !force &&
+      this.lastPullAt > 0 &&
+      Date.now() - this.lastPullAt < SHORT_CACHE_MS &&
+      this.status.authState === 'authenticated' &&
+      this.status.lastSyncAt
+    ) {
+      this.status = {
+        ...this.status,
+        message: '最近 5 分钟内已同步，本次使用短期缓存；如需强制刷新请在设置页点击“仅同步学习通”。'
+      }
+      this.persist()
+      this.onProgress({ phase: 'done', message: this.status.message, current: 0, total: 0 })
+      return this.getStatus()
+    }
     this.syncing = true
     const startedAt = new Date().toISOString()
     this.status = {
@@ -94,8 +118,10 @@ export class ChaoxingSessionService {
       message: '正在通过 Web Session 读取学习通数据…'
     }
     this.persist()
+    this.onProgress({ phase: 'start', message: '正在通过 Web Session 读取学习通数据…', current: 0, total: 0 })
     try {
       const result = await this.adapter.pull()
+      this.lastPullAt = Date.now()
       const counts = this.persistResult(result)
       const now = new Date().toISOString()
       const partial = result.errors.length > 0 || result.warnings.length > 0
@@ -103,12 +129,16 @@ export class ChaoxingSessionService {
         ...this.status,
         authState: 'authenticated',
         message: partial
-          ? `同步完成，${counts.courses} 门课程、${counts.tasks} 项作业；部分课程读取失败`
-          : `同步完成，${counts.courses} 门课程、${counts.tasks} 项作业`,
+          ? `同步完成，${counts.courses} 门课程、${counts.tasks} 项作业、${counts.chapters} 个章节、${counts.exams} 场考试、${counts.notices} 条通知、${counts.materials} 个资料；部分数据读取失败`
+          : `同步完成，${counts.courses} 门课程、${counts.tasks} 项作业、${counts.chapters} 个章节、${counts.exams} 场考试、${counts.notices} 条通知、${counts.materials} 个资料`,
         checkedAt: now,
         lastSyncAt: now,
         syncedCourses: counts.courses,
         syncedTasks: counts.tasks,
+        syncedChapters: counts.chapters,
+        syncedExams: counts.exams,
+        syncedNotices: counts.notices,
+        syncedMaterials: counts.materials,
         detail: buildDetail(result)
       }
       this.onSyncOutcome({
@@ -133,7 +163,9 @@ export class ChaoxingSessionService {
             ? '学习通要求安全验证，自动同步已停止，请本人在 Portal 处理'
             : access?.code === 'NOT_LOGGED_IN'
               ? '尚未在 Portal 登录学习通'
-              : '同步失败，本地数据未受影响',
+              : access?.code === 'CANCELLED'
+                ? '同步已取消，本地数据未受影响'
+                : '同步失败，本地数据未受影响',
         checkedAt: new Date().toISOString(),
         detail: error instanceof Error ? error.message : '未知错误'
       }
@@ -150,7 +182,84 @@ export class ChaoxingSessionService {
     return this.getStatus()
   }
 
-  private persistResult(result: ChaoxingPullResult): { courses: number; tasks: number } {
+  async retryCourse(courseId: string): Promise<ChaoxingSessionStatus> {
+    if (this.syncing) return this.getStatus()
+    const course = this.store.getCourse(courseId)
+    if (!course || course.source !== 'chaoxing' || !course.externalId) {
+      this.status = { ...this.status, message: '该课程不是学习通同步课程，无法重试' }
+      this.persist()
+      return this.getStatus()
+    }
+    if (!this.adapter.pullCourse) {
+      this.status = { ...this.status, message: '当前适配器不支持单课程重试' }
+      this.persist()
+      return this.getStatus()
+    }
+    this.syncing = true
+    const startedAt = new Date().toISOString()
+    this.status = {
+      ...this.status,
+      lastAttemptAt: startedAt,
+      message: `正在重试课程：${course.name}…`
+    }
+    this.persist()
+    this.onProgress({ phase: 'start', message: this.status.message, current: 0, total: 0 })
+    try {
+      const result = await this.adapter.pullCourse(course.externalId)
+      const counts = this.persistResult(result)
+      const materialCount = (result.materials ?? []).reduce((sum, group) => sum + group.items.length, 0)
+      const now = new Date().toISOString()
+      const partial = result.errors.length > 0 || result.warnings.length > 0
+      this.status = {
+        ...this.status,
+        authState: 'authenticated',
+        message: partial
+          ? `课程重试完成：${course.name}，${counts.tasks} 项作业、${counts.chapters} 个章节、${materialCount} 个资料；部分数据读取失败`
+          : `课程重试完成：${course.name}，${counts.tasks} 项作业、${counts.chapters} 个章节、${materialCount} 个资料`,
+        checkedAt: now,
+        lastSyncAt: now,
+        detail: buildDetail(result)
+      }
+      this.onSyncOutcome({
+        state: partial ? 'partial' : 'success',
+        message: this.status.message,
+        detail: this.status.detail,
+        lastSuccessAt: now
+      })
+    } catch (error) {
+      const access = error instanceof ChaoxingAccessError ? error : null
+      this.status = {
+        ...this.status,
+        message:
+          access?.code === 'BLOCKED'
+            ? '学习通要求安全验证，自动同步已停止，请本人在 Portal 处理'
+            : access?.code === 'CANCELLED'
+              ? '同步已取消，本地数据未受影响'
+              : '课程重试失败，本地数据未受影响',
+        checkedAt: new Date().toISOString(),
+        detail: error instanceof Error ? error.message : '未知错误'
+      }
+      this.onSyncOutcome({
+        state: access?.code === 'NOT_LOGGED_IN' ? 'not_configured' : 'failure',
+        message: this.status.message,
+        detail: this.status.detail,
+        lastSuccessAt: this.status.lastSyncAt
+      })
+    } finally {
+      this.syncing = false
+      this.persist()
+    }
+    return this.getStatus()
+  }
+
+  private persistResult(result: ChaoxingPullResult): {
+    courses: number
+    tasks: number
+    exams: number
+    chapters: number
+    notices: number
+    materials: number
+  } {
     const reminderOffsets = this.store.getSettings().defaultReminderOffsets
     if (result.courses.length > 0) {
       // 真实数据到达后移除演示种子，避免“同步成功但界面仍显示演示课程”。
@@ -165,6 +274,8 @@ export class ChaoxingSessionService {
           name: bundle.name,
           teacher: bundle.teacher,
           sourceUrl: bundle.sourceUrl,
+          clazzId: bundle.clazzId,
+          className: null,
           ...(result.schedule
             ? {
                 schedule: bundle.schedule,
@@ -200,12 +311,109 @@ export class ChaoxingSessionService {
           source: 'chaoxing',
           sourceUpdatedAt: result.checkedAt,
           platformStatus: record.platformStatus,
-          platformStatusKind: record.platformStatusKind
+          platformStatusKind: record.platformStatusKind,
+          submittedAt: record.submittedAt,
+          score: record.score,
+          fullScore: record.fullScore,
+          teacherFeedback: record.teacherFeedback
         }
       )
       tasks += 1
     }
-    return { courses, tasks }
+    return {
+      courses,
+      tasks,
+      exams: this.persistExams(result),
+      chapters: this.persistChapters(result, courseIdMap),
+      notices: this.persistNotices(result),
+      materials: this.persistMaterials(result, courseIdMap)
+    }
+  }
+
+  private persistMaterials(
+    result: ChaoxingPullResult,
+    courseIdMap: Map<string, string>
+  ): number {
+    let count = 0
+    for (const group of result.materials ?? []) {
+      const courseId = courseIdMap.get(group.courseExternalId)
+      if (!courseId) continue
+      count += this.store.replaceProviderMaterials(courseId, group.items, 'chaoxing')
+    }
+    return Math.max(count, this.store.listMaterials().length)
+  }
+
+  private persistNotices(result: ChaoxingPullResult): number {
+    let count = 0
+    for (const notice of result.notices ?? []) {
+      this.store.upsertProviderNotice(notice, 'chaoxing')
+      count += 1
+    }
+    return Math.max(count, this.store.listNotices().length)
+  }
+
+  private persistChapters(
+    result: ChaoxingPullResult,
+    courseIdMap: Map<string, string>
+  ): number {
+    let chapters = 0
+    for (const bundle of result.chapters ?? []) {
+      const courseId = courseIdMap.get(bundle.courseExternalId)
+      if (!courseId) continue
+      for (const chapter of bundle.chapters) {
+        const { chapter: stored } = this.store.upsertSnapshotChapter(
+          {
+            courseId,
+            externalId: chapter.externalId,
+            title: chapter.title,
+            sortOrder: chapter.sortOrder,
+            progress: chapter.progress
+          },
+          'chaoxing'
+        )
+        for (const section of chapter.sections) {
+          this.store.upsertSnapshotPoint(
+            {
+              chapterId: stored.id,
+              courseId,
+              externalId: section.externalId,
+              title: section.title,
+              kind: section.kind,
+              completed: section.completed,
+              durationMinutes: null,
+              sortOrder: section.sortOrder
+            },
+            'chaoxing'
+          )
+        }
+        chapters += 1
+      }
+    }
+    return chapters
+  }
+
+  private persistExams(result: ChaoxingPullResult): number {
+    let exams = 0
+    for (const record of result.exams ?? []) {
+      this.store.upsertProviderExam(
+        {
+          externalId: record.externalId,
+          title: record.title,
+          courseName: record.courseName,
+          startAt: record.startAt,
+          endAt: record.endAt,
+          durationMinutes: record.durationMinutes,
+          examStatus: record.examStatus,
+          answerStatus: record.answerStatus,
+          score: record.score,
+          mode: record.mode,
+          sourceUrl: record.sourceUrl
+        },
+        'chaoxing'
+      )
+      exams += 1
+    }
+    return exams
   }
 
   private readStatus(): ChaoxingSessionStatus {
@@ -235,6 +443,10 @@ export class ChaoxingSessionService {
             lastAttemptAt: parsed.lastAttemptAt ?? null,
             syncedCourses: parsed.syncedCourses ?? 0,
             syncedTasks: parsed.syncedTasks ?? 0,
+            syncedChapters: parsed.syncedChapters ?? 0,
+            syncedExams: parsed.syncedExams ?? 0,
+            syncedNotices: parsed.syncedNotices ?? 0,
+            syncedMaterials: parsed.syncedMaterials ?? 0,
             transport: parsed.transport ?? 'none',
             httpStatus: parsed.httpStatus ?? null,
             cookieDomainCount: parsed.cookieDomainCount ?? 0,
@@ -256,6 +468,10 @@ export class ChaoxingSessionService {
       lastAttemptAt: null,
       syncedCourses: 0,
       syncedTasks: 0,
+      syncedChapters: 0,
+      syncedExams: 0,
+      syncedNotices: 0,
+      syncedMaterials: 0,
       transport: 'none',
       httpStatus: null,
       cookieDomainCount: 0,

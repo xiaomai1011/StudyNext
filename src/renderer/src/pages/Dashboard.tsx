@@ -379,7 +379,11 @@ export function Dashboard({
               <div>
                 <h2 className="card-title">最近通知</h2>
                 <p className="card-subtitle">
-                  {notices.length > 0 ? '当前为演示通知，不代表学习通消息' : '尚未接入学习通通知'}
+                  {notices.length > 0
+                    ? notices[0]?.isDemo
+                      ? '当前为演示通知，不代表学习通消息'
+                      : '来自学习通 Web Session 的只读通知'
+                    : '尚未接入学习通通知'}
                 </p>
               </div>
               <span className="spacer" />
@@ -391,14 +395,32 @@ export function Dashboard({
               {recentNotices.map((notice) => {
                 const Icon = NOTICE_ICON[notice.category]
                 return (
-                  <div className="notice-item" key={notice.id}>
+                  <div
+                    className={notice.url ? 'notice-item clickable' : 'notice-item'}
+                    key={notice.id}
+                    onClick={() => {
+                      if (notice.url) void window.studynext.app.openExternal(notice.url)
+                    }}
+                  >
                     <div className={`notice-icon ${notice.category}`}>
                       <Icon />
                     </div>
                     <div className="notice-main">
-                      <div className="notice-title">{notice.title}</div>
+                      <div className="notice-title">
+                        {notice.read === false ? <span className="notice-unread-dot" /> : null}
+                        {notice.title}
+                      </div>
                       <div className="notice-body">{notice.body}</div>
-                      <div className="notice-time">{relativeTime(notice.publishedAt)} · 演示</div>
+                      <div className="notice-time">
+                        {relativeTime(notice.publishedAt)} ·{' '}
+                        {notice.isDemo
+                          ? '演示'
+                          : notice.sender
+                            ? notice.sender
+                            : notice.read === false
+                              ? '未读'
+                              : '学习通'}
+                      </div>
                     </div>
                   </div>
                 )

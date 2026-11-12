@@ -35,6 +35,10 @@ export interface ChaoxingSessionStatus {
   lastAttemptAt: string | null
   syncedCourses: number
   syncedTasks: number
+  syncedChapters: number
+  syncedExams: number
+  syncedNotices: number
+  syncedMaterials: number
   transport: ChaoxingTransport
   httpStatus: number | null
   cookieDomainCount: number
@@ -60,6 +64,8 @@ export interface Course {
   category: string
   color: string
   favorite: boolean
+  clazzId?: string | null
+  className?: string | null
   schedule: CourseSession[]
   semesterStart?: string | null
   maxWeek?: number
@@ -181,6 +187,10 @@ export interface Task {
   sourceUrl: string | null
   platformStatus: string | null
   platformStatusKind: PlatformStatusKind
+  submittedAt: string | null
+  score: string | null
+  fullScore: string | null
+  teacherFeedback: string | null
   manualFields: TaskField[]
   fieldSources: Partial<Record<TaskField, DataSource>>
   createdAt: string
@@ -209,6 +219,8 @@ export interface AppSettings {
   calendarWeekStartsOn: 0 | 1
   catchUpMissedReminders: boolean
   trustedSsoDomains: string[]
+  /** 空字符串表示使用系统下载目录下的 StudyNext 文件夹。 */
+  downloadDirectory: string
 }
 
 export interface AppNotice {
@@ -217,7 +229,60 @@ export interface AppNotice {
   body: string
   category: 'course' | 'system' | 'notice'
   publishedAt: string
-  isDemo: true
+  isDemo: boolean
+  source?: DataSource
+  sender?: string | null
+  courseName?: string | null
+  read?: boolean | null
+  url?: string | null
+}
+
+export interface Exam {
+  id: string
+  externalId: string
+  title: string
+  courseName: string | null
+  startAt: string | null
+  endAt: string | null
+  durationMinutes: number | null
+  examStatus: string
+  answerStatus: string
+  score: string | null
+  mode: string | null
+  sourceUrl: string | null
+  source: DataSource
+  updatedAt: string
+}
+
+export interface SyncProgressEvent {
+  phase:
+    | 'start'
+    | 'courses'
+    | 'homework'
+    | 'schedule'
+    | 'exams'
+    | 'chapters'
+    | 'notices'
+    | 'materials'
+    | 'done'
+    | 'failed'
+  message: string
+  current: number
+  total: number
+}
+
+export interface Material {
+  id: string
+  courseId: string
+  externalId: string
+  name: string
+  kind: 'folder' | 'file' | 'link'
+  fileType: string | null
+  size: string | null
+  url: string | null
+  sourceUrl: string | null
+  source: DataSource
+  updatedAt: string
 }
 
 export interface SnapshotInfo {
@@ -270,6 +335,8 @@ export interface BootstrapData {
   studyPoints: StudyPoint[]
   questions: QuestionCard[]
   tasks: Task[]
+  exams: Exam[]
+  materials: Material[]
   settings: AppSettings
   notices: AppNotice[]
   syncStatus: SyncStatus
@@ -350,6 +417,18 @@ export interface PortalState {
   error: string | null
 }
 
+export interface PortalDownload {
+  id: string
+  filename: string
+  url: string
+  state: 'progressing' | 'completed' | 'cancelled' | 'interrupted'
+  receivedBytes: number
+  totalBytes: number
+  startedAt: string
+  completedAt: string | null
+  savePath?: string
+}
+
 export interface PortalSecurityState {
   sandbox: boolean
   contextIsolation: boolean
@@ -371,6 +450,8 @@ export type NavigateTarget =
   | 'study'
   | 'courses'
   | 'tasks'
+  | 'exams'
+  | 'materials'
   | 'questions'
   | 'calendar'
   | 'portal'
@@ -387,6 +468,9 @@ export interface StudyNextApi {
   }
   courses: {
     setFavorite: (id: string, favorite: boolean) => Promise<Course>
+  }
+  materials: {
+    download: (id: string) => Promise<void>
   }
   study: {
     setPointCompleted: (id: string, completed: boolean) => Promise<ToggleStudyPointResult>
@@ -419,7 +503,10 @@ export interface StudyNextApi {
   chaoxing: {
     status: () => Promise<ChaoxingSessionStatus>
     check: () => Promise<ChaoxingSessionStatus>
-    sync: () => Promise<ChaoxingSessionStatus>
+    sync: (force?: boolean) => Promise<ChaoxingSessionStatus>
+    retryCourse: (courseId: string) => Promise<ChaoxingSessionStatus>
+    cancel: () => Promise<ChaoxingSessionStatus>
+    onSyncProgress: (callback: (event: SyncProgressEvent) => void) => () => void
     credentialsStatus: () => Promise<ChaoxingCredentialStatus>
     saveCredentials: (input: { username: string; password: string }) => Promise<ChaoxingCredentialStatus>
     clearCredentials: () => Promise<ChaoxingCredentialStatus>
@@ -427,6 +514,7 @@ export interface StudyNextApi {
   }
   portal: {
     open: (entryId: string) => Promise<void>
+    openUrl: (url: string) => Promise<void>
     close: () => Promise<void>
     state: () => Promise<PortalState>
     back: () => Promise<void>
@@ -437,6 +525,15 @@ export interface StudyNextApi {
     clearNavigationLog: () => Promise<void>
     securityState: () => Promise<PortalSecurityState>
     setBounds: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
+    downloads: () => Promise<PortalDownload[]>
+    download: (url: string) => Promise<void>
+    openDownload: (id: string) => Promise<void>
+    revealDownload: (id: string) => Promise<void>
+    cancelDownload: (id: string) => Promise<void>
+    clearDownloads: () => Promise<void>
+    downloadDirectory: () => Promise<string>
+    chooseDownloadDirectory: () => Promise<string | null>
+    onDownload: (callback: (item: PortalDownload) => void) => () => void
     onState: (callback: (state: PortalState) => void) => () => void
   }
   entries: {

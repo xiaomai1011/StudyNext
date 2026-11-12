@@ -27,7 +27,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultReminderOffsets: [4320, 1440, 180, 60],
   calendarWeekStartsOn: 1,
   catchUpMissedReminders: true,
-  trustedSsoDomains: []
+  trustedSsoDomains: [],
+  downloadDirectory: ''
 }
 
 export const TASK_PRIORITY_LABEL: Record<TaskPriority, string> = {

@@ -6,6 +6,8 @@ import {
   BrainCircuit,
   CalendarDays,
   CheckCircle2,
+  ClipboardList,
+  FolderOpen,
   Globe2,
   GraduationCap,
   LayoutDashboard,
@@ -23,6 +25,8 @@ import type {
   AppSettings,
   BootstrapData,
   ChaoxingSessionStatus,
+  Course,
+  Material,
   NavigateTarget,
   OfficialEntry,
   OfficialEntryInput,
@@ -38,6 +42,8 @@ import { dueBucket, formatRemainingCompact, isDueAtUnknown, sortTasksByDue } fro
 import { Dashboard } from './pages/Dashboard'
 import { Courses } from './pages/Courses'
 import { Tasks } from './pages/Tasks'
+import { Exams } from './pages/Exams'
+import { Materials } from './pages/Materials'
 import { Calendar } from './pages/Calendar'
 import { Portal } from './pages/Portal'
 import { Settings } from './pages/Settings'
@@ -54,6 +60,8 @@ const NAV_ITEMS: Array<{ id: NavigateTarget; label: string; icon: typeof LayoutD
   { id: 'study', label: '学习中心', icon: BookMarked },
   { id: 'courses', label: '课程中心', icon: BookOpen },
   { id: 'tasks', label: '任务中心', icon: ListChecks },
+  { id: 'exams', label: '考试中心', icon: ClipboardList },
+  { id: 'materials', label: '资料中心', icon: FolderOpen },
   { id: 'calendar', label: '日历', icon: CalendarDays },
   { id: 'questions', label: '题目助手', icon: MessageSquareText },
   { id: 'portal', label: '官方页面', icon: Globe2 },
@@ -65,6 +73,8 @@ const ROUTE_TITLE: Record<NavigateTarget, string> = {
   study: '学习中心',
   courses: '课程中心',
   tasks: '任务中心',
+  exams: '考试中心',
+  materials: '资料中心',
   calendar: '日历',
   questions: '题目助手',
   portal: '官方页面',
@@ -375,10 +385,41 @@ export default function App(): JSX.Element {
     return next
   }
 
-  const handleChaoxingSync = async (): Promise<ChaoxingSessionStatus> => {
-    const next = await api.chaoxing.sync()
+  const handleChaoxingSync = async (force = true): Promise<ChaoxingSessionStatus> => {
+    const next = await api.chaoxing.sync(force)
     await refreshBootstrap()
     return next
+  }
+
+  const handleChaoxingRetryCourse = async (course: Course): Promise<void> => {
+    try {
+      const next = await api.chaoxing.retryCourse(course.id)
+      await refreshBootstrap()
+      notify(next.authState === 'authenticated' ? 'success' : 'error', next.message)
+    } catch (error) {
+      notify('error', errorMessage(error))
+    }
+  }
+
+  const handleMaterialDownload = async (material: Material): Promise<void> => {
+    try {
+      await api.materials.download(material.id)
+      notify('info', `已开始下载 ${material.name}，可在“官方页面 → 下载管理器”查看进度`)
+    } catch (error) {
+      notify('error', errorMessage(error))
+    }
+  }
+
+  const handleOpenTaskInPortal = async (task: Task): Promise<void> => {
+    if (!task.sourceUrl) return
+    try {
+      await api.portal.openUrl(task.sourceUrl)
+      setSelectedTaskId(null)
+      navigate('portal')
+      notify('info', '已在官方页面打开作业，可直接编辑、上传附件并提交')
+    } catch (error) {
+      notify('error', errorMessage(error))
+    }
   }
 
   const handleCreateEntry = async (input: OfficialEntryInput): Promise<void> => {
@@ -494,6 +535,7 @@ export default function App(): JSX.Element {
         courses={data.courses}
         onToggleFavorite={(course) => handleToggleFavorite(course.id, course.favorite)}
         onOpenOfficial={() => openPortal('entry-courses')}
+        onRetryCourse={handleChaoxingRetryCourse}
       />
     ) : route === 'tasks' ? (
       <Tasks
@@ -505,6 +547,10 @@ export default function App(): JSX.Element {
         onToggle={(task) => void handleToggleTask(task)}
         onDelete={requestDelete}
       />
+    ) : route === 'exams' ? (
+      <Exams exams={data.exams} />
+    ) : route === 'materials' ? (
+      <Materials courses={data.courses} materials={data.materials} onDownload={handleMaterialDownload} />
     ) : route === 'calendar' ? (
       <Calendar
         tasks={data.tasks}
@@ -685,6 +731,7 @@ export default function App(): JSX.Element {
           task={selectedTask}
           course={selectedCourse}
           onClose={() => setSelectedTaskId(null)}
+          onOpenInPortal={() => void handleOpenTaskInPortal(selectedTask)}
           onEdit={() => {
             setEditor({ task: selectedTask })
             setSelectedTaskId(null)

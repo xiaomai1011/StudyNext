@@ -115,7 +115,7 @@ test('学习中心、题目卡与本地快照导入完整可用', async () => {
     .filter({ hasText: '新增课程 1' })
     .filter({ hasText: '章节 1' })
   await expect(snapshotResult).toBeVisible()
-  await expect(page.locator('.titlebar-status')).toContainText('本地快照 · 非实时同步')
+  await expect(page.locator('.titlebar-status')).toContainText('本地快照 · 未连接学习通')
 
   await open('学习中心', '学习中心')
   const snapshotCourse = page.locator('.study-course').filter({ hasText: '测试快照课程' })

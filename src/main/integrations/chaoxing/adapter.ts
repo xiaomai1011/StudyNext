@@ -1,17 +1,27 @@
-import type { CourseSession, PlatformStatusKind } from '@shared/types'
+import type { CourseSession, PlatformStatusKind, SyncProgressEvent } from '@shared/types'
 import {
   ChaoxingParseError,
   classifyHomeworkStatus,
   detectLoginState,
   parseCourseFrameUrl,
   parseCourseList,
+  parseExamList,
+  parseChapterList,
+  parseMaterialList,
+  parseNoticeList,
   parseHomeworkDetail,
   parseHomeworkList,
   parseProfile,
   readHiddenValue,
   resolveDeadline
 } from './parsers'
-import type { ChaoxingCourseRecord, ChaoxingProfile } from './parsers'
+import type {
+  ChaoxingCourseRecord,
+  ChaoxingExamRecord,
+  ChaoxingMaterialRecord,
+  ChaoxingNoticeRecord,
+  ChaoxingProfile
+} from './parsers'
 import { PortalSessionHttpClient } from './session-client'
 import type { SessionHttpClient, SessionTransport } from './session-client'
 import {
@@ -31,6 +41,7 @@ const BASE_URL = 'https://i.chaoxing.com/base'
 const COURSE_MIDDLE_URL = 'https://mooc1.chaoxing.com/visit/stucoursemiddle'
 const WORK_LIST_URL = 'https://mooc1.chaoxing.com/mooc2/work/list'
 const SCHEDULE_URL = 'https://kb.chaoxing.com/pc/curriculum/getMyLessons'
+const EXAM_LIST_URL = 'https://mooc1-api.chaoxing.com/exam-ans/exam/test/examcode/examlist'
 const MAX_COURSES = 60
 const MAX_DETAILS_PER_COURSE = 20
 const MAX_SCHEDULE_WEEKS = 30
@@ -44,6 +55,7 @@ export type ChaoxingAccessCode =
   | 'NETWORK'
   | 'PARSE'
   | 'UNEXPECTED'
+  | 'CANCELLED'
 
 export class ChaoxingAccessError extends Error {
   constructor(
@@ -84,11 +96,38 @@ export interface ChaoxingTaskRecord {
   platformStatus: string
   platformStatusKind: PlatformStatusKind
   sourceUrl: string | null
+  submittedAt: string | null
+  score: string | null
+  fullScore: string | null
+  teacherFeedback: string | null
+}
+
+export interface ChaoxingCourseChapters {
+  courseExternalId: string
+  chapters: Array<{
+    externalId: string
+    title: string
+    sortOrder: number
+    progress: number
+    sections: Array<{
+      externalId: string
+      title: string
+      sortOrder: number
+      completed: boolean
+      kind: 'video' | 'reading' | 'quiz' | 'discussion' | 'assignment' | 'other'
+    }>
+  }>
+  done: number
+  total: number
 }
 
 export interface ChaoxingPullResult {
   courses: ChaoxingCourseBundle[]
   tasks: ChaoxingTaskRecord[]
+  exams?: ChaoxingExamRecord[]
+  notices?: ChaoxingNoticeRecord[]
+  chapters?: ChaoxingCourseChapters[]
+  materials?: Array<{ courseExternalId: string; items: ChaoxingMaterialRecord[] }>
   schedule?: ChaoxingSchedule | null
   errors: string[]
   warnings: string[]
@@ -101,14 +140,39 @@ export interface ChaoxingPullResult {
  * 与 ChaoxingAuthorizedAdapter（OAuth/机构接口）不同，这里完全依赖用户本人
  * 在 Portal 中建立的登录会话，只发 GET/受控 POST 查询，不接触账号密码。
  */
-export type ChaoxingAdapterLike = Pick<ChaoxingSessionAdapter, 'checkSession' | 'pull'>
+export type ChaoxingAdapterLike = Pick<ChaoxingSessionAdapter, 'checkSession' | 'pull'> & {
+  pullCourse?: (courseExternalId: string) => Promise<ChaoxingPullResult>
+  cancel?: () => void
+  onProgress?: (event: SyncProgressEvent) => void
+}
 
 export class ChaoxingSessionAdapter {
   constructor(
     private readonly client: SessionHttpClient = new PortalSessionHttpClient(),
     private readonly coursePageProvider?: () => Promise<string | null>,
-    private readonly scheduleProvider?: () => Promise<string | null>
+    private readonly scheduleProvider?: () => Promise<string | null>,
+    private readonly examPageProvider?: () => Promise<string | null>,
+    private readonly chapterPageProvider?: (courseUrl: string) => Promise<string | null>,
+    private readonly noticePageProvider?: () => Promise<string | null>,
+    private readonly materialPageProvider?: (courseUrl: string) => Promise<string | null>
   ) {}
+
+  onProgress?: (event: SyncProgressEvent) => void
+  private cancelled = false
+
+  cancel(): void {
+    this.cancelled = true
+  }
+
+  private checkCancelled(): void {
+    if (this.cancelled) {
+      throw new ChaoxingAccessError('CANCELLED', '同步已取消')
+    }
+  }
+
+  private emit(event: SyncProgressEvent): void {
+    this.onProgress?.(event)
+  }
 
   async checkSession(): Promise<ChaoxingCheckResult> {
     const cookieDomainCount = await this.client.countCookieDomains().catch(() => 0)
@@ -142,6 +206,8 @@ export class ChaoxingSessionAdapter {
   }
 
   async pull(): Promise<ChaoxingPullResult> {
+    this.cancelled = false
+    this.emit({ phase: 'start', message: '正在检查学习通登录状态…', current: 0, total: 0 })
     const check = await this.checkSession()
     if (check.authState === 'logged_out') {
       throw new ChaoxingAccessError('NOT_LOGGED_IN', '尚未在 Portal 登录学习通')
@@ -149,6 +215,108 @@ export class ChaoxingSessionAdapter {
     if (check.authState !== 'authenticated') {
       throw new ChaoxingAccessError('UNEXPECTED', '无法确认学习通登录状态，请先打开 Portal 检查')
     }
+    const courses = await this.loadCourses()
+    this.checkCancelled()
+    this.emit({
+      phase: 'courses',
+      message: `已获取 ${courses.length} 门课程`,
+      current: courses.length,
+      total: courses.length
+    })
+    const bundles: ChaoxingCourseBundle[] = []
+    const tasks: ChaoxingTaskRecord[] = []
+    const errors: string[] = []
+    const warnings: string[] = []
+    this.emit({ phase: 'schedule', message: '正在读取课表…', current: 0, total: 1 })
+    const schedule = await this.fetchSchedule(warnings)
+    this.checkCancelled()
+    this.emit({ phase: 'exams', message: '正在读取考试列表…', current: 0, total: 1 })
+    const exams = await this.fetchExams(warnings)
+    this.checkCancelled()
+    this.emit({ phase: 'notices', message: '正在读取通知…', current: 0, total: 1 })
+    const notices = await this.fetchNotices(warnings)
+    this.checkCancelled()
+
+    for (let index = 0; index < courses.length; index += 1) {
+      this.checkCancelled()
+      const course = courses[index]
+      if (!course) continue
+      const bundle = toBundle(course)
+      bundle.schedule = schedule ? sessionsForCourse(schedule, bundle) : []
+      bundles.push(bundle)
+      this.emit({
+        phase: 'homework',
+        message: `正在读取作业：${bundle.name}`,
+        current: index + 1,
+        total: courses.length
+      })
+      const courseTasks = await this.fetchCourseTasks(bundle, errors, warnings)
+      tasks.push(...courseTasks)
+      await delay(REQUEST_GAP_MS)
+    }
+    this.emit({ phase: 'chapters', message: '正在读取章节目录…', current: 0, total: bundles.length })
+    const chapters = await this.fetchChapters(bundles, warnings)
+    this.checkCancelled()
+    this.emit({ phase: 'materials', message: '正在读取课程资料…', current: 0, total: bundles.length })
+    const materials = await this.fetchMaterials(bundles, warnings)
+    this.checkCancelled()
+    this.emit({ phase: 'done', message: '学习通数据读取完成', current: 1, total: 1 })
+    return {
+      courses: bundles,
+      tasks,
+      exams,
+      notices,
+      chapters,
+      materials,
+      schedule,
+      errors,
+      warnings,
+      checkedAt: new Date().toISOString()
+    }
+  }
+
+  /** 仅重试一门课程的作业、章节与资料，用于失败后的局部恢复。 */
+  async pullCourse(courseExternalId: string): Promise<ChaoxingPullResult> {
+    this.cancelled = false
+    this.emit({ phase: 'start', message: '正在检查学习通登录状态…', current: 0, total: 0 })
+    const check = await this.checkSession()
+    if (check.authState === 'logged_out') {
+      throw new ChaoxingAccessError('NOT_LOGGED_IN', '尚未在 Portal 登录学习通')
+    }
+    if (check.authState !== 'authenticated') {
+      throw new ChaoxingAccessError('UNEXPECTED', '无法确认学习通登录状态，请先打开 Portal 检查')
+    }
+    const courses = await this.loadCourses()
+    const course = courses.find((item) => item.externalId === courseExternalId)
+    if (!course) {
+      throw new ChaoxingAccessError('PARSE', '课程列表中未找到该课程，请先完整同步一次')
+    }
+    const errors: string[] = []
+    const warnings: string[] = []
+    this.emit({ phase: 'homework', message: `正在重试课程：${course.name}`, current: 1, total: 1 })
+    const tasks = await this.fetchCourseTasks(course, errors, warnings)
+    this.emit({ phase: 'chapters', message: '正在重试章节…', current: 1, total: 1 })
+    const chapters = await this.fetchChapters([course], warnings)
+    this.checkCancelled()
+    this.emit({ phase: 'materials', message: '正在重试资料…', current: 1, total: 1 })
+    const materials = await this.fetchMaterials([course], warnings)
+    this.emit({ phase: 'done', message: '单课程重试完成', current: 1, total: 1 })
+    return {
+      courses: [course],
+      tasks,
+      exams: [],
+      notices: [],
+      chapters,
+      materials,
+      schedule: null,
+      errors,
+      warnings,
+      checkedAt: new Date().toISOString()
+    }
+  }
+
+  /** 从个人空间 / Portal 已渲染课程网格解析课程列表。 */
+  private async loadCourses(): Promise<ChaoxingCourseBundle[]> {
     const response = await this.get(BASE_URL)
     let parsedCourses = parseCourseList(response.body)
     if (parsedCourses.length === 0 && this.coursePageProvider) {
@@ -168,28 +336,131 @@ export class ChaoxingSessionAdapter {
         '个人空间未解析到课程，请确认 Portal 已打开“个人空间”页面'
       )
     }
-    const courses = parsedCourses.slice(0, MAX_COURSES)
-    const bundles: ChaoxingCourseBundle[] = []
-    const tasks: ChaoxingTaskRecord[] = []
-    const errors: string[] = []
-    const warnings: string[] = []
-    const schedule = await this.fetchSchedule(warnings)
+    return parsedCourses.slice(0, MAX_COURSES).map(toBundle)
+  }
 
-    for (const course of courses) {
-      const bundle = toBundle(course)
-      bundle.schedule = schedule ? sessionsForCourse(schedule, bundle) : []
-      bundles.push(bundle)
-      const courseTasks = await this.fetchCourseTasks(bundle, errors, warnings)
-      tasks.push(...courseTasks)
-      await delay(REQUEST_GAP_MS)
+  private async fetchNotices(warnings: string[]): Promise<ChaoxingNoticeRecord[]> {
+    if (!this.noticePageProvider) return []
+    try {
+      const raw = await this.noticePageProvider()
+      if (!raw) return []
+      return parseNoticeList(raw)
+    } catch (error) {
+      warnings.push(`通知：${error instanceof Error ? error.message : '读取失败'}`)
+      return []
     }
-    return {
-      courses: bundles,
-      tasks,
-      schedule,
-      errors,
-      warnings,
-      checkedAt: new Date().toISOString()
+  }
+
+  private async fetchChapters(
+    bundles: ChaoxingCourseBundle[],
+    warnings: string[]
+  ): Promise<ChaoxingCourseChapters[]> {
+    if (!this.chapterPageProvider) return []
+    const result: ChaoxingCourseChapters[] = []
+    for (let index = 0; index < bundles.length; index += 1) {
+      this.checkCancelled()
+      const bundle = bundles[index]
+      if (!bundle) continue
+      this.emit({
+        phase: 'chapters',
+        message: `正在读取章节：${bundle.name}`,
+        current: index + 1,
+        total: bundles.length
+      })
+      try {
+        const html = await this.chapterPageProvider(bundle.sourceUrl)
+        if (!html) continue
+        const parsed = parseChapterList(html)
+        if (parsed.chapters.length === 0) continue
+        result.push({
+          courseExternalId: bundle.externalId,
+          done: parsed.done,
+          total: parsed.total,
+          chapters: parsed.chapters.map((chapter, chapterIndex) => {
+            const sections = chapter.sections.map((section, sectionIndex) => ({
+              externalId: `${bundle.externalId}:sec:${section.number}`,
+              title: section.title,
+              sortOrder: sectionIndex,
+              completed: section.completed,
+              kind: inferStudyPointKind(section.title)
+            }))
+            const completed = sections.filter((section) => section.completed).length
+            return {
+              externalId: `${bundle.externalId}:ch:${chapter.number}`,
+              title: chapter.title,
+              sortOrder: chapterIndex,
+              progress: sections.length === 0 ? 0 : Math.round((completed / sections.length) * 100),
+              sections
+            }
+          })
+        })
+      } catch (error) {
+        warnings.push(`章节 ${bundle.name}：${error instanceof Error ? error.message : '读取失败'}`)
+      }
+      await delay(100)
+    }
+    return result
+  }
+
+  private async fetchMaterials(
+    bundles: ChaoxingCourseBundle[],
+    warnings: string[]
+  ): Promise<Array<{ courseExternalId: string; items: ChaoxingMaterialRecord[] }>> {
+    if (!this.materialPageProvider) return []
+    const result: Array<{ courseExternalId: string; items: ChaoxingMaterialRecord[] }> = []
+    for (let index = 0; index < bundles.length; index += 1) {
+      this.checkCancelled()
+      const bundle = bundles[index]
+      if (!bundle) continue
+      this.emit({
+        phase: 'materials',
+        message: `正在读取资料：${bundle.name}`,
+        current: index + 1,
+        total: bundles.length
+      })
+      try {
+        const html = await this.materialPageProvider(bundle.sourceUrl)
+        if (!html) continue
+        const items = parseMaterialList(html)
+        if (items.length === 0) continue
+        result.push({
+          courseExternalId: bundle.externalId,
+          items: items.map((item) => ({
+            ...item,
+            sourceUrl: item.sourceUrl ?? bundle.sourceUrl
+          }))
+        })
+      } catch (error) {
+        warnings.push(`资料 ${bundle.name}：${error instanceof Error ? error.message : '读取失败'}`)
+      }
+      await delay(100)
+    }
+    return result
+  }
+
+  private async fetchExams(warnings: string[]): Promise<ChaoxingExamRecord[]> {
+    try {
+      const response = await this.client.request({
+        url: `${EXAM_LIST_URL}?status=-1`,
+        referer: BASE_URL,
+        accept: 'text/html,*/*;q=0.8'
+      })
+      if (!isBlockedBody(response.body) && response.status < 400) {
+        const parsed = parseExamList(response.body)
+        if (parsed.length > 0) return parsed
+      }
+      if (this.examPageProvider) {
+        const html = await this.examPageProvider().catch(() => null)
+        if (html) return parseExamList(html)
+      }
+      return []
+    } catch (error) {
+      if (this.examPageProvider) {
+        const html = await this.examPageProvider().catch(() => null)
+        if (html) return parseExamList(html)
+      }
+      warnings.push(`考试：${error instanceof Error ? error.message : '读取失败'}`)
+      return []
     }
   }
 
@@ -335,7 +606,11 @@ export class ChaoxingSessionAdapter {
         dueAt,
         platformStatus: item.status,
         platformStatusKind: classifyHomeworkStatus(item.status),
-        sourceUrl: item.url || null
+        sourceUrl: item.url || null,
+        submittedAt: resolveDeadline(detail?.submittedAtText ?? null),
+        score: detail?.score ?? null,
+        fullScore: detail?.fullScore != null ? String(detail.fullScore) : null,
+        teacherFeedback: detail?.teacherFeedback ?? null
       })
     }
     return result
@@ -381,6 +656,17 @@ function toBundle(course: ChaoxingCourseRecord): ChaoxingCourseBundle {
       course.cpi
     )}&vc=1&ismooc2=1&v=2`
   }
+}
+
+function inferStudyPointKind(
+  title: string
+): 'video' | 'reading' | 'quiz' | 'discussion' | 'assignment' | 'other' {
+  if (/视频|讲解|录播|微课/.test(title)) return 'video'
+  if (/讨论/.test(title)) return 'discussion'
+  if (/测验|练习|测试/.test(title)) return 'quiz'
+  if (/作业|任务/.test(title)) return 'assignment'
+  if (/阅读|文档|资料|课件/.test(title)) return 'reading'
+  return 'other'
 }
 
 function sessionsForCourse(
