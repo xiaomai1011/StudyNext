@@ -2126,6 +2126,84 @@ a {
   color: var(--danger);
 }
 
+.portal-audit {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  flex-shrink: 0;
+}
+
+.portal-audit summary {
+  padding: 8px 12px;
+  color: var(--text-soft);
+  font-size: 10.5px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.portal-audit-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 0 12px 7px;
+  color: var(--text-faint);
+  font-size: 9.5px;
+}
+
+.portal-audit-list {
+  max-height: 92px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+}
+
+.portal-audit-row {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 9.5px;
+}
+
+.portal-audit-row:last-child {
+  border-bottom: 0;
+}
+
+.portal-audit-row.blocked {
+  background: var(--danger-soft);
+}
+
+.portal-audit-action {
+  color: var(--accent-strong);
+  font-weight: 650;
+}
+
+.portal-audit-url {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--text-soft);
+}
+
+.portal-audit-state {
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+
+.portal-audit-row.blocked .portal-audit-state {
+  color: var(--danger);
+}
+
+.portal-audit-empty {
+  padding: 9px 12px;
+  border-top: 1px solid var(--border);
+  color: var(--text-faint);
+  font-size: 9.5px;
+}
+
 .portal-stage {
   flex: 1;
   min-height: 0;
@@ -3335,4 +3413,31 @@ a {
     white-space: nowrap;
     width: auto;
   }
+}
+
+.task-history {
+  margin-top: 16px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.task-history-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+
+.task-history-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px dashed var(--border);
+}
+
+.task-history-row:last-child {
+  border-bottom: 0;
 }

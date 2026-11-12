@@ -23,7 +23,7 @@ import {
   type ParsedTaskUpsert
 } from '@shared/validation'
 import type { StudyNextStore } from './storage/store'
-import type { ReminderScheduler } from './notifications/scheduler'
+import type { NotificationScheduler } from './notifications/scheduler'
 import type { SyncService } from './integrations/sync'
 import type { PortalService } from './portal/service'
 import { importTasksFromFile } from './integrations/import'
@@ -34,7 +34,7 @@ import { errorMessage, UserFacingError } from './lib/errors'
 
 interface RegisterIpcOptions {
   store: StudyNextStore
-  scheduler: ReminderScheduler
+  scheduler: NotificationScheduler
   sync: SyncService
   ai: AiService
   portal: PortalService
@@ -81,6 +81,7 @@ function toSettingsPatch(parsed: z.infer<typeof settingsPatchSchema>): Partial<A
     patch.calendarWeekStartsOn = parsed.calendarWeekStartsOn
   if (parsed.catchUpMissedReminders !== undefined)
     patch.catchUpMissedReminders = parsed.catchUpMissedReminders
+  if (parsed.trustedSsoDomains !== undefined) patch.trustedSsoDomains = parsed.trustedSsoDomains
   return patch
 }
 
@@ -171,6 +172,10 @@ export function registerIpc(options: RegisterIpcOptions): void {
     return task
   })
 
+  handle(IPC.tasksHistory, (_event, id) => {
+    return store.listTaskHistory(parseInput(z.string().uuid(), id))
+  })
+
   handle(IPC.coursesSetFavorite, (_event, id, favorite) => {
     return store.setCourseFavorite(
       parseInput(z.string().uuid(), id),
@@ -257,6 +262,7 @@ export function registerIpc(options: RegisterIpcOptions): void {
   handle(IPC.portalReload, () => portal.reload())
   handle(IPC.portalOpenInitialInBrowser, () => portal.openInitialInBrowser())
   handle(IPC.portalClearSession, () => portal.clearSession())
+  handle(IPC.portalClearNavigationLog, () => portal.clearNavigationLog())
   handle(IPC.portalSecurityState, () => portal.getSecurityState())
   handle(IPC.portalSetBounds, (_event, bounds) => {
     const parsed = parseInput(

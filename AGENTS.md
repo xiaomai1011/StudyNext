@@ -22,7 +22,7 @@ StudyNext 是学习通第三方桌面客户端，核心价值是：
 
 ## 2. 技术约束
 
-- Electron **38.8.6**、electron-vite 6、Vite 8、React 19、TypeScript 5.9、Tailwind 4。
+- Electron **45.3.0**、electron-vite 6、Vite 8、React 19、TypeScript 5.9、Tailwind 4。
 - 项目是 CommonJS 包，没有 `"type": "module"`；主进程与 preload 输出 CJS。
 - 数据库使用 Electron 内置 Node 的 `node:sqlite`（`DatabaseSync`），不要引入 `better-sqlite3` 等原生模块，除非同时完成 ABI 与打包验证。
 - `@shared` 指向 `src/shared`，`@renderer` 指向 `src/renderer/src`；不要用脆弱的相对路径穿透层。
@@ -164,7 +164,7 @@ npm run build:win
 - 月视图课程按每周重复渲染，未实现单双周、调休、节假日。
 - 提醒依赖主进程运行，未实现 Windows 任务计划程序或常驻服务。
 - 同步适配器只有接口与 `not_configured` 状态，没有真实 OAuth。
-- 学习快照仅支持手动 JSON 导入，没有定时拉取或增量合并。
+- 学习快照仅支持手动 JSON 导入；已支持按外部 ID 增量更新、截止变化检测和手动字段冲突保留，但不会主动拉取或自动刷新。
 - AI 解题依赖用户自备的 OpenAI 兼容服务，未内置模型；输出质量与服务商策略由用户承担。
 - 安装包未签名，未接入自动更新。
 - 应用图标为本地生成的占位品牌图标，正式发布前应做视觉定稿。

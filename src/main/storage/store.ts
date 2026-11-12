@@ -24,6 +24,9 @@ import type {
   StudyPoint,
   StudyPointKind,
   Task,
+  TaskChange,
+  TaskCompletionSource,
+  TaskField,
   TaskUpsertInput
 } from '@shared/types'
 import { UserFacingError } from '../lib/errors'
@@ -58,10 +61,30 @@ interface TaskRow {
   status: string
   due_at: string
   completed_at: string | null
+  completion_source: string | null
   source: string
   external_id: string | null
+  source_updated_at: string | null
+  manual_fields_json: string
+  field_sources_json: string
   created_at: string
   updated_at: string
+}
+
+interface TaskChangeRow {
+  id: string
+  task_id: string
+  changed_at: string
+  origin: string
+  summary: string
+  changes_json: string
+}
+
+export interface ImportedTaskUpsertResult {
+  task: Task
+  action: 'created' | 'updated' | 'unchanged'
+  deadlineChanged: boolean
+  conflicts: TaskField[]
 }
 
 interface ReminderRow {
@@ -202,8 +225,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL CHECK (status IN ('todo', 'done')),
   due_at TEXT NOT NULL,
   completed_at TEXT,
+  completion_source TEXT,
   source TEXT NOT NULL DEFAULT 'manual',
   external_id TEXT,
+  source_updated_at TEXT,
+  manual_fields_json TEXT NOT NULL DEFAULT '[]',
+  field_sources_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -211,6 +238,16 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_external
   ON tasks(source, external_id) WHERE external_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_tasks_due ON tasks(status, due_at);
+
+CREATE TABLE IF NOT EXISTS task_change_log (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  changed_at TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  changes_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_task_changes_task ON task_change_log(task_id, changed_at DESC);
 
 CREATE TABLE IF NOT EXISTS task_reminders (
   id TEXT PRIMARY KEY,
@@ -541,6 +578,18 @@ export class StudyNextStore {
     if (!columns.some((column) => column.name === 'external_id')) {
       this.db.exec('ALTER TABLE courses ADD COLUMN external_id TEXT')
     }
+    const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all() as unknown as Array<{
+      name: string
+    }>
+    const addTaskColumn = (name: string, definition: string): void => {
+      if (!taskColumns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE tasks ADD COLUMN ${name} ${definition}`)
+      }
+    }
+    addTaskColumn('completion_source', 'TEXT')
+    addTaskColumn('source_updated_at', 'TEXT')
+    addTaskColumn('manual_fields_json', "TEXT NOT NULL DEFAULT '[]'")
+    addTaskColumn('field_sources_json', "TEXT NOT NULL DEFAULT '{}'")
     this.db.exec(`
       DROP INDEX IF EXISTS idx_chapters_external;
       DROP INDEX IF EXISTS idx_points_external;
@@ -550,6 +599,16 @@ export class StudyNextStore {
         ON course_chapters(course_id, source, external_id) WHERE external_id IS NOT NULL;
       CREATE UNIQUE INDEX idx_points_external
         ON study_points(course_id, source, external_id) WHERE external_id IS NOT NULL;
+      CREATE TABLE IF NOT EXISTS task_change_log (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        changed_at TEXT NOT NULL,
+        origin TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        changes_json TEXT NOT NULL DEFAULT '[]'
+      );
+      CREATE INDEX IF NOT EXISTS idx_task_changes_task
+        ON task_change_log(task_id, changed_at DESC);
     `)
   }
 
@@ -582,8 +641,10 @@ export class StudyNextStore {
         entry.isBuiltin ? 1 : 0
       )
     }
-    this.setMetaIfMissing('schema_version', '2')
-    if (this.getMeta('schema_version') === '1') this.setMeta('schema_version', '2')
+    this.setMetaIfMissing('schema_version', '3')
+    if (this.getMeta('schema_version') === '1' || this.getMeta('schema_version') === '2') {
+      this.setMeta('schema_version', '3')
+    }
     this.setMetaIfMissing('demo_initialized', '0')
     if (this.getMeta('demo_initialized') === '0') {
       this.seedDemoData()
@@ -1197,7 +1258,14 @@ export class StudyNextStore {
 
   createTask(
     input: TaskUpsertInput,
-    options: { source?: DataSource; externalId?: string | null } = {}
+    options: {
+      source?: DataSource
+      externalId?: string | null
+      sourceUpdatedAt?: string | null
+      completionSource?: TaskCompletionSource | null
+      fieldSources?: Partial<Record<TaskField, DataSource>>
+      manualFields?: TaskField[]
+    } = {}
   ): Task {
     const id = randomUUID()
     const now = new Date().toISOString()
@@ -1205,14 +1273,21 @@ export class StudyNextStore {
     const dueAt = new Date(input.dueAt).toISOString()
     const source = options.source ?? 'manual'
     const externalId = options.externalId ?? null
+    const completionSource =
+      status === 'done'
+        ? (options.completionSource ?? (source === 'manual' ? 'local' : 'platform'))
+        : null
+    const fieldSources = options.fieldSources ?? fieldSourcesFor(source)
+    const manualFields = options.manualFields ?? (source === 'manual' ? [...ALL_TASK_FIELDS] : [])
     this.transaction(() => {
       this.db
         .prepare(
           `
           INSERT INTO tasks
             (id, title, description, course_id, priority, kind, status, due_at, completed_at,
-             source, external_id, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             completion_source, source, external_id, source_updated_at, manual_fields_json,
+             field_sources_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         )
         .run(
@@ -1225,12 +1300,20 @@ export class StudyNextStore {
           status,
           dueAt,
           status === 'done' ? now : null,
+          completionSource,
           source,
           externalId,
+          options.sourceUpdatedAt ?? (source === 'import' ? now : null),
+          JSON.stringify(manualFields),
+          JSON.stringify(fieldSources),
           now,
           now
         )
       this.syncReminderRules(id, input.reminderOffsets, now)
+      this.recordTaskChange(id, source, source === 'import' ? '导入任务' : '创建任务', [
+        { field: 'title', from: null, to: input.title.trim() },
+        { field: 'dueAt', from: null, to: dueAt }
+      ])
     })
     const task = this.getTask(id)
     if (!task) throw new UserFacingError('TASK_CREATE_FAILED', '任务创建失败')
@@ -1243,25 +1326,71 @@ export class StudyNextStore {
     const now = new Date().toISOString()
     const status = input.status ?? previous.status
     const dueAt = new Date(input.dueAt).toISOString()
+    const title = input.title.trim()
+    const description = input.description.trim()
+    const nextReminders = normalizeReminderOffsets(input.reminderOffsets).join(',')
+    const previousReminders = previous.reminders
+      .map((rule) => rule.offsetMinutes)
+      .sort((a, b) => a - b)
+      .join(',')
+    const changes: Array<{ field: TaskField; from: string | null; to: string | null }> = []
+    if (previous.title !== title) changes.push({ field: 'title', from: previous.title, to: title })
+    if (previous.description !== description) {
+      changes.push({ field: 'description', from: previous.description, to: description })
+    }
+    if (previous.courseId !== input.courseId) {
+      changes.push({ field: 'courseId', from: previous.courseId, to: input.courseId })
+    }
+    if (previous.priority !== input.priority) {
+      changes.push({ field: 'priority', from: previous.priority, to: input.priority })
+    }
+    if (previous.kind !== input.kind) {
+      changes.push({ field: 'kind', from: previous.kind, to: input.kind })
+    }
+    if (previous.dueAt !== dueAt) {
+      changes.push({ field: 'dueAt', from: previous.dueAt, to: dueAt })
+    }
+    if (previous.status !== status) {
+      changes.push({ field: 'status', from: previous.status, to: status })
+    }
+    if (previousReminders !== nextReminders) {
+      changes.push({
+        field: 'reminders',
+        from: previousReminders || null,
+        to: nextReminders || null
+      })
+    }
+    const manualFields = mergeTaskFields(
+      previous.manualFields,
+      changes.map((change) => change.field)
+    )
+    const fieldSources = { ...previous.fieldSources }
+    for (const change of changes) fieldSources[change.field] = 'manual'
+    const completionSource =
+      status === 'done' ? (previous.status === 'done' ? previous.completionSource : 'local') : null
     this.transaction(() => {
       this.db
         .prepare(
           `
           UPDATE tasks SET
             title = ?, description = ?, course_id = ?, priority = ?, kind = ?, status = ?,
-            due_at = ?, completed_at = ?, updated_at = ?
+            due_at = ?, completed_at = ?, completion_source = ?, manual_fields_json = ?,
+            field_sources_json = ?, updated_at = ?
           WHERE id = ?
         `
         )
         .run(
-          input.title.trim(),
-          input.description.trim(),
+          title,
+          description,
           input.courseId,
           input.priority,
           input.kind,
           status,
           dueAt,
           status === 'done' ? (previous.completedAt ?? now) : null,
+          completionSource,
+          JSON.stringify(manualFields),
+          JSON.stringify(fieldSources),
           now,
           id
         )
@@ -1269,19 +1398,162 @@ export class StudyNextStore {
         this.db.prepare('DELETE FROM notification_deliveries WHERE task_id = ?').run(id)
       }
       this.syncReminderRules(id, input.reminderOffsets, now)
+      if (changes.length > 0) {
+        this.recordTaskChange(id, 'manual', '手动编辑任务', changes)
+      }
     })
     const task = this.getTask(id)
     if (!task) throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
     return task
   }
 
+  upsertImportedTask(
+    input: TaskUpsertInput,
+    options: { externalId: string; source?: DataSource; sourceUpdatedAt?: string | null }
+  ): ImportedTaskUpsertResult {
+    const source = options.source ?? 'import'
+    const existing = this.findTaskByExternalId(source, options.externalId)
+    if (!existing) {
+      return {
+        task: this.createTask(input, {
+          source,
+          externalId: options.externalId,
+          ...(options.sourceUpdatedAt !== undefined
+            ? { sourceUpdatedAt: options.sourceUpdatedAt }
+            : {}),
+          fieldSources: fieldSourcesFor(source),
+          completionSource: (input.status ?? 'todo') === 'done' ? 'platform' : null
+        }),
+        action: 'created',
+        deadlineChanged: false,
+        conflicts: []
+      }
+    }
+
+    const nextStatus = input.status ?? existing.status
+    const nextDueAt = new Date(input.dueAt).toISOString()
+    const incoming: Record<TaskField, string> = {
+      title: input.title.trim(),
+      description: input.description.trim(),
+      courseId: input.courseId ?? '',
+      priority: input.priority,
+      kind: input.kind,
+      status: nextStatus,
+      dueAt: nextDueAt,
+      reminders: normalizeReminderOffsets(input.reminderOffsets).join(',')
+    }
+    const current = taskFieldValueMap(existing)
+    const nextValues = { ...current }
+    const protectedFields = new Set(existing.manualFields)
+    const changes: Array<{ field: TaskField; from: string | null; to: string | null }> = []
+    const conflicts: TaskField[] = []
+    const fieldSources = { ...existing.fieldSources }
+    for (const field of ALL_TASK_FIELDS) {
+      if (field === 'reminders') continue
+      if (current[field] === incoming[field]) continue
+      if (protectedFields.has(field)) {
+        conflicts.push(field)
+        continue
+      }
+      nextValues[field] = incoming[field]
+      changes.push({ field, from: current[field] || null, to: incoming[field] || null })
+      fieldSources[field] = source
+    }
+    if (changes.length === 0) {
+      this.db
+        .prepare('UPDATE tasks SET source_updated_at = ? WHERE id = ?')
+        .run(options.sourceUpdatedAt ?? new Date().toISOString(), existing.id)
+      return {
+        task: this.getTask(existing.id) ?? existing,
+        action: 'unchanged',
+        deadlineChanged: false,
+        conflicts
+      }
+    }
+    const effectiveStatus = nextValues.status as Task['status']
+    const effectiveDueAt = new Date(nextValues.dueAt).toISOString()
+    const deadlineChanged = changes.some((change) => change.field === 'dueAt')
+    const completionSource =
+      effectiveStatus === 'done'
+        ? existing.completionSource === 'local'
+          ? 'local'
+          : 'platform'
+        : null
+    const now = new Date().toISOString()
+    this.transaction(() => {
+      this.db
+        .prepare(
+          `
+          UPDATE tasks SET
+            title = ?, description = ?, course_id = ?, priority = ?, kind = ?, status = ?,
+            due_at = ?, completed_at = ?, completion_source = ?, source_updated_at = ?,
+            field_sources_json = ?, updated_at = ?
+          WHERE id = ?
+        `
+        )
+        .run(
+          nextValues.title,
+          nextValues.description,
+          nextValues.courseId || null,
+          nextValues.priority,
+          nextValues.kind,
+          effectiveStatus,
+          effectiveDueAt,
+          effectiveStatus === 'done' ? (existing.completedAt ?? now) : null,
+          completionSource,
+          options.sourceUpdatedAt ?? now,
+          JSON.stringify(fieldSources),
+          now,
+          existing.id
+        )
+      if (deadlineChanged) {
+        this.db.prepare('DELETE FROM notification_deliveries WHERE task_id = ?').run(existing.id)
+      }
+      this.recordTaskChange(
+        existing.id,
+        source,
+        conflicts.length > 0 ? '快照更新任务（保留手动字段）' : '快照更新任务',
+        changes
+      )
+    })
+    const task = this.getTask(existing.id)
+    if (!task) throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
+    return { task, action: 'updated', deadlineChanged, conflicts }
+  }
+
+  listTaskHistory(taskId: string): TaskChange[] {
+    const rows = this.db
+      .prepare('SELECT * FROM task_change_log WHERE task_id = ? ORDER BY changed_at DESC')
+      .all(taskId) as unknown as TaskChangeRow[]
+    return rows.map(mapTaskChangeRow)
+  }
+
   setTaskCompleted(id: string, completed: boolean): Task {
     const previous = this.getTask(id)
     if (!previous) throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
+    if ((previous.status === 'done') === completed) return previous
     const now = new Date().toISOString()
-    this.db
-      .prepare('UPDATE tasks SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?')
-      .run(completed ? 'done' : 'todo', completed ? now : null, now, id)
+    const manualFields = mergeTaskFields(previous.manualFields, ['status'])
+    const fieldSources = { ...previous.fieldSources, status: 'manual' as const }
+    this.transaction(() => {
+      this.db
+        .prepare(
+          `UPDATE tasks SET status = ?, completed_at = ?, completion_source = ?,
+             manual_fields_json = ?, field_sources_json = ?, updated_at = ? WHERE id = ?`
+        )
+        .run(
+          completed ? 'done' : 'todo',
+          completed ? now : null,
+          completed ? 'local' : null,
+          JSON.stringify(manualFields),
+          JSON.stringify(fieldSources),
+          now,
+          id
+        )
+      this.recordTaskChange(id, 'manual', completed ? '标记为本地完成' : '取消完成', [
+        { field: 'status', from: previous.status, to: completed ? 'done' : 'todo' }
+      ])
+    })
     const task = this.getTask(id)
     if (!task) throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
     return task
@@ -1292,6 +1564,20 @@ export class StudyNextStore {
     if (Number(result.changes) === 0) {
       throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
     }
+  }
+
+  private recordTaskChange(
+    taskId: string,
+    origin: DataSource | 'system',
+    summary: string,
+    changes: Array<{ field: TaskField; from: string | null; to: string | null }>
+  ): void {
+    this.db
+      .prepare(
+        `INSERT INTO task_change_log(id, task_id, changed_at, origin, summary, changes_json)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      )
+      .run(randomUUID(), taskId, new Date().toISOString(), origin, summary, JSON.stringify(changes))
   }
 
   private syncReminderRules(taskId: string, offsets: number[], now: string): void {
@@ -1380,7 +1666,8 @@ export class StudyNextStore {
       notificationsEnabled: read('notificationsEnabled'),
       defaultReminderOffsets: read('defaultReminderOffsets'),
       calendarWeekStartsOn: read('calendarWeekStartsOn'),
-      catchUpMissedReminders: read('catchUpMissedReminders')
+      catchUpMissedReminders: read('catchUpMissedReminders'),
+      trustedSsoDomains: read('trustedSsoDomains')
     }
   }
 
@@ -1521,6 +1808,74 @@ function mapCourseRow(row: CourseRow): Course {
   }
 }
 
+const ALL_TASK_FIELDS: TaskField[] = [
+  'title',
+  'description',
+  'courseId',
+  'priority',
+  'kind',
+  'status',
+  'dueAt',
+  'reminders'
+]
+
+const DATA_SOURCES: DataSource[] = ['demo', 'manual', 'import', 'chaoxing']
+
+function fieldSourcesFor(source: DataSource): Partial<Record<TaskField, DataSource>> {
+  return Object.fromEntries(ALL_TASK_FIELDS.map((field) => [field, source])) as Partial<
+    Record<TaskField, DataSource>
+  >
+}
+
+function parseTaskFields(value: string): TaskField[] {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is TaskField => ALL_TASK_FIELDS.includes(item as TaskField))
+  } catch {
+    return []
+  }
+}
+
+function parseTaskFieldSources(value: string): Partial<Record<TaskField, DataSource>> {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (typeof parsed !== 'object' || parsed === null) return {}
+    const result: Partial<Record<TaskField, DataSource>> = {}
+    for (const [key, source] of Object.entries(parsed)) {
+      if (
+        ALL_TASK_FIELDS.includes(key as TaskField) &&
+        DATA_SOURCES.includes(source as DataSource)
+      ) {
+        result[key as TaskField] = source as DataSource
+      }
+    }
+    return result
+  } catch {
+    return {}
+  }
+}
+
+function mergeTaskFields(current: TaskField[], next: TaskField[]): TaskField[] {
+  return [...new Set([...current, ...next])]
+}
+
+function taskFieldValueMap(task: Task): Record<TaskField, string> {
+  return {
+    title: task.title,
+    description: task.description,
+    courseId: task.courseId ?? '',
+    priority: task.priority,
+    kind: task.kind,
+    status: task.status,
+    dueAt: task.dueAt,
+    reminders: task.reminders
+      .map((rule) => rule.offsetMinutes)
+      .sort((a, b) => a - b)
+      .join(',')
+  }
+}
+
 function mapTaskRow(row: TaskRow, reminders: ReminderRule[]): Task {
   return {
     id: row.id,
@@ -1532,11 +1887,40 @@ function mapTaskRow(row: TaskRow, reminders: ReminderRule[]): Task {
     status: row.status as Task['status'],
     dueAt: row.due_at,
     completedAt: row.completed_at,
+    completionSource: (row.completion_source as TaskCompletionSource | null) ?? null,
     source: row.source as DataSource,
     externalId: row.external_id,
+    sourceUpdatedAt: row.source_updated_at,
+    manualFields: parseTaskFields(row.manual_fields_json),
+    fieldSources: parseTaskFieldSources(row.field_sources_json),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     reminders
+  }
+}
+
+function mapTaskChangeRow(row: TaskChangeRow): TaskChange {
+  let changes: TaskChange['changes'] = []
+  try {
+    const parsed: unknown = JSON.parse(row.changes_json)
+    if (Array.isArray(parsed)) {
+      changes = parsed.filter(
+        (item): item is TaskChange['changes'][number] =>
+          typeof item === 'object' &&
+          item !== null &&
+          typeof (item as { field?: unknown }).field === 'string'
+      )
+    }
+  } catch {
+    changes = []
+  }
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    changedAt: row.changed_at,
+    origin: row.origin as TaskChange['origin'],
+    summary: row.summary,
+    changes
   }
 }
 

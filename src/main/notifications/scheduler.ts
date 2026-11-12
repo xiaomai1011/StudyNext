@@ -20,6 +20,24 @@ export interface ReminderSchedulerOptions {
   now?: () => Date
 }
 
+export interface NotificationScheduler {
+  start(): number
+  stop(): void
+  refresh(): void
+  getStartupCatchUpCount(): number
+  getNextReminderAt(): string | null
+}
+
+export type NotificationSchedulerFactory = (
+  options: ReminderSchedulerOptions
+) => NotificationScheduler
+
+export function createNotificationScheduler(
+  options: ReminderSchedulerOptions
+): NotificationScheduler {
+  return new ReminderScheduler(options)
+}
+
 export function formatReminderOffset(offsetMinutes: number): string {
   const preset = REMINDER_PRESETS.find((item) => item.minutes === offsetMinutes)
   if (preset) return preset.label
@@ -78,7 +96,7 @@ export function findNextReminderAt(tasks: Task[], now = new Date()): string | nu
  * The scheduler only runs while the Electron main process is alive. It never
  * claims that notifications remain scheduled after the application quits.
  */
-export class ReminderScheduler {
+export class ReminderScheduler implements NotificationScheduler {
   private timer: NodeJS.Timeout | null = null
   private running = false
   private startupCatchUpCount = 0

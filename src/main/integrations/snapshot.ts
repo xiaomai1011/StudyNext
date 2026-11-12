@@ -389,6 +389,9 @@ export function importStudySnapshot(
   let totalChapters = 0
   let totalPoints = 0
   let importedTasks = 0
+  let updatedTasks = 0
+  let deadlineChanges = 0
+  let conflicts = 0
   let skipped = 0
   const warnings = [...parsed.warnings]
   const courseIds = new Map<string, string>()
@@ -442,10 +445,6 @@ export function importStudySnapshot(
 
   const now = new Date().toISOString()
   for (const task of parsed.tasks) {
-    if (store.findTaskByExternalId('import', task.externalId)) {
-      skipped += 1
-      continue
-    }
     let courseId = task.courseExternalId ? (courseIds.get(task.courseExternalId) ?? null) : null
     if (!courseId && task.courseName) {
       const existing = store.findCourseByName(task.courseName)
@@ -470,8 +469,16 @@ export function importStudySnapshot(
       status: task.status
     }
     try {
-      store.createTask(taskInput, { source: 'import', externalId: task.externalId })
-      importedTasks += 1
+      const result = store.upsertImportedTask(taskInput, {
+        externalId: task.externalId,
+        source: 'import',
+        sourceUpdatedAt: now
+      })
+      if (result.action === 'created') importedTasks += 1
+      else if (result.action === 'updated') updatedTasks += 1
+      else skipped += 1
+      if (result.deadlineChanged) deadlineChanges += 1
+      conflicts += result.conflicts.length
     } catch (error) {
       warnings.push(`导入任务「${task.title}」失败：${errorText(error)}`)
     }
@@ -483,14 +490,17 @@ export function importStudySnapshot(
     courses: importedCourses + updatedCourses,
     chapters: totalChapters,
     points: totalPoints,
-    tasks: importedTasks
+    tasks: importedTasks + updatedTasks
   }
+  const changedCount =
+    importedCourses +
+    updatedCourses +
+    importedChapters +
+    importedPoints +
+    importedTasks +
+    updatedTasks
   const state: SnapshotImportResult['state'] =
-    warnings.length === 0
-      ? 'success'
-      : importedCourses + importedChapters + importedTasks > 0
-        ? 'partial'
-        : 'failure'
+    warnings.length === 0 ? 'success' : changedCount > 0 ? 'partial' : 'failure'
   return {
     state,
     importedCourses,
@@ -498,12 +508,15 @@ export function importStudySnapshot(
     importedChapters,
     importedPoints,
     importedTasks,
+    updatedTasks,
+    deadlineChanges,
+    conflicts,
     skipped,
     warnings: warnings.slice(0, 30),
     message:
       state === 'failure'
         ? '快照导入失败，请检查文件格式'
-        : `已导入 ${importedCourses + updatedCourses} 门课程、${importedChapters} 个章节、${importedPoints} 个学习点、${importedTasks} 个截止任务`,
+        : `已导入 ${importedCourses + updatedCourses} 门课程、${importedChapters} 个章节、${importedPoints} 个学习点；新增 ${importedTasks} 个任务，更新 ${updatedTasks} 个任务${deadlineChanges > 0 ? `，检测到 ${deadlineChanges} 个截止时间变化` : ''}${conflicts > 0 ? `，保留 ${conflicts} 个手动字段` : ''}`,
     snapshot
   }
 }

@@ -21,6 +21,7 @@ import type {
   StudyNextApi,
   SyncStatus,
   Task,
+  TaskChange,
   TaskUpsertInput,
   ToggleStudyPointResult,
   WindowStateEvent
@@ -40,7 +41,8 @@ const api: StudyNextApi = {
       ipcRenderer.invoke(IPC.tasksUpdate, id, input) as Promise<Task>,
     remove: (id: string) => ipcRenderer.invoke(IPC.tasksRemove, id) as Promise<void>,
     setCompleted: (id: string, completed: boolean) =>
-      ipcRenderer.invoke(IPC.tasksSetCompleted, id, completed) as Promise<Task>
+      ipcRenderer.invoke(IPC.tasksSetCompleted, id, completed) as Promise<Task>,
+    history: (id: string) => ipcRenderer.invoke(IPC.tasksHistory, id) as Promise<TaskChange[]>
   },
   courses: {
     setFavorite: (id: string, favorite: boolean) =>
@@ -93,6 +95,7 @@ const api: StudyNextApi = {
     reload: () => ipcRenderer.invoke(IPC.portalReload) as Promise<void>,
     openInitialInBrowser: () => ipcRenderer.invoke(IPC.portalOpenInitialInBrowser) as Promise<void>,
     clearSession: () => ipcRenderer.invoke(IPC.portalClearSession) as Promise<void>,
+    clearNavigationLog: () => ipcRenderer.invoke(IPC.portalClearNavigationLog) as Promise<void>,
     securityState: () =>
       ipcRenderer.invoke(IPC.portalSecurityState) as Promise<PortalSecurityState>,
     setBounds: (bounds: { x: number; y: number; width: number; height: number }) =>

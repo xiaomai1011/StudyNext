@@ -2,6 +2,16 @@ export type ThemeMode = 'system' | 'light' | 'dark'
 export type TaskPriority = 'high' | 'medium' | 'low'
 export type TaskKind = 'homework' | 'exam' | 'reading' | 'activity' | 'other'
 export type TaskStatus = 'todo' | 'done'
+export type TaskCompletionSource = 'local' | 'platform'
+export type TaskField =
+  | 'title'
+  | 'description'
+  | 'courseId'
+  | 'priority'
+  | 'kind'
+  | 'status'
+  | 'dueAt'
+  | 'reminders'
 export type DataSource = 'demo' | 'manual' | 'import' | 'chaoxing'
 export type SyncState = 'not_configured' | 'syncing' | 'success' | 'partial' | 'failure'
 
@@ -117,6 +127,15 @@ export interface ReminderRule {
   createdAt: string
 }
 
+export interface TaskChange {
+  id: string
+  taskId: string
+  changedAt: string
+  origin: DataSource | 'system'
+  summary: string
+  changes: Array<{ field: TaskField; from: string | null; to: string | null }>
+}
+
 export interface Task {
   id: string
   title: string
@@ -127,8 +146,12 @@ export interface Task {
   status: TaskStatus
   dueAt: string
   completedAt: string | null
+  completionSource: TaskCompletionSource | null
   source: DataSource
   externalId: string | null
+  sourceUpdatedAt: string | null
+  manualFields: TaskField[]
+  fieldSources: Partial<Record<TaskField, DataSource>>
   createdAt: string
   updatedAt: string
   reminders: ReminderRule[]
@@ -153,6 +176,7 @@ export interface AppSettings {
   defaultReminderOffsets: number[]
   calendarWeekStartsOn: 0 | 1
   catchUpMissedReminders: boolean
+  trustedSsoDomains: string[]
 }
 
 export interface AppNotice {
@@ -244,6 +268,9 @@ export interface SnapshotImportResult {
   importedChapters: number
   importedPoints: number
   importedTasks: number
+  updatedTasks: number
+  deadlineChanges: number
+  conflicts: number
   skipped: number
   warnings: string[]
   message: string
@@ -264,6 +291,17 @@ export interface ReminderFiredEvent {
 }
 
 export type PortalLoadState = 'idle' | 'loading' | 'ready' | 'blocked' | 'error'
+export type PortalLoginState = 'unknown' | 'logged_out' | 'logged_in'
+
+export interface PortalNavigationEvent {
+  id: string
+  at: string
+  action: 'navigate' | 'redirect' | 'blocked' | 'open'
+  url: string
+  displayUrl: string
+  allowed: boolean
+  reason: string | null
+}
 
 export interface PortalState {
   entryId: string | null
@@ -274,6 +312,8 @@ export interface PortalState {
   canGoBack: boolean
   canGoForward: boolean
   loggedIn: boolean | null
+  loginState: PortalLoginState
+  navigationLog: PortalNavigationEvent[]
   error: string | null
 }
 
@@ -310,6 +350,7 @@ export interface StudyNextApi {
     update: (id: string, input: TaskUpsertInput) => Promise<Task>
     remove: (id: string) => Promise<void>
     setCompleted: (id: string, completed: boolean) => Promise<Task>
+    history: (id: string) => Promise<TaskChange[]>
   }
   courses: {
     setFavorite: (id: string, favorite: boolean) => Promise<Course>
@@ -351,6 +392,7 @@ export interface StudyNextApi {
     reload: () => Promise<void>
     openInitialInBrowser: () => Promise<void>
     clearSession: () => Promise<void>
+    clearNavigationLog: () => Promise<void>
     securityState: () => Promise<PortalSecurityState>
     setBounds: (bounds: { x: number; y: number; width: number; height: number }) => Promise<void>
     onState: (callback: (state: PortalState) => void) => () => void

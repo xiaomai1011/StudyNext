@@ -123,3 +123,16 @@ test('学习中心、题目卡与本地快照导入完整可用', async () => {
   await snapshotCourse.click()
   await expect(page.locator('.study-point').filter({ hasText: '快照学习点' })).toHaveCount(1)
 })
+
+test('校园 SSO 域名设置保存并在重载后保留', async () => {
+  await open('设置', '偏好与数据')
+  const ssoDomains = page.locator('#sso-domains')
+  await ssoDomains.fill('sso.example.edu.cn\nlogin.example.edu.cn')
+  await page.getByRole('button', { name: '保存 SSO 域名' }).click()
+  await expect(page.locator('.toast').filter({ hasText: '校园 SSO 域名已保存' })).toBeVisible()
+
+  await page.reload()
+  await page.waitForSelector('.app-shell')
+  await open('设置', '偏好与数据')
+  await expect(page.locator('#sso-domains')).toHaveValue('sso.example.edu.cn\nlogin.example.edu.cn')
+})

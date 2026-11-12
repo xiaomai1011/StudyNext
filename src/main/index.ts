@@ -1,8 +1,8 @@
-import { mkdirSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import {
   app,
   BrowserWindow,
+  dialog,
   Menu,
   nativeImage,
   nativeTheme,
@@ -19,18 +19,23 @@ import type {
   SyncStatus
 } from '@shared/types'
 import { StudyNextStore } from './storage/store'
-import { ReminderScheduler, formatReminderOffset } from './notifications/scheduler'
+import {
+  createNotificationScheduler,
+  formatReminderOffset,
+  type NotificationScheduler
+} from './notifications/scheduler'
 import { SyncService } from './integrations/sync'
 import { AiService } from './integrations/ai'
 import { PortalService } from './portal/service'
 import { registerIpc } from './ipc'
 import { errorMessage } from './lib/errors'
+import { ensureUserDataDirectory, userDataPathCandidates } from './lib/user-data'
 import { loadWindowState, trackWindowState } from './window-state'
 
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let store: StudyNextStore | null = null
-let scheduler: ReminderScheduler | null = null
+let scheduler: NotificationScheduler | null = null
 let portal: PortalService | null = null
 let isQuitting = false
 let stopWindowStateTracking: (() => void) | null = null
@@ -41,32 +46,34 @@ app.setName(APP_NAME)
 app.setAppUserModelId(APP_ID)
 
 function resolveUserDataPath(): string {
-  const override = process.env.STUDYNEXT_DATA_DIR?.trim()
-  if (override) return resolve(override)
-  const roots =
-    process.platform === 'win32'
-      ? [
-          ...(process.env.LOCALAPPDATA ? [join(process.env.LOCALAPPDATA, 'StudyNext')] : []),
-          join(app.getPath('appData'), 'StudyNext'),
-          join(app.getPath('temp'), 'StudyNext')
-        ]
-      : [join(app.getPath('appData'), 'StudyNext'), join(app.getPath('temp'), 'StudyNext')]
-  for (const candidate of roots) {
-    try {
-      mkdirSync(candidate, { recursive: true })
-      return candidate
-    } catch {
-      // Try the next per-user location instead of failing at module load.
-    }
-  }
-  throw new Error('无法创建本地数据目录，请设置 STUDYNEXT_DATA_DIR 后重试')
+  return ensureUserDataDirectory(
+    userDataPathCandidates({
+      platform: process.platform,
+      appData: app.getPath('appData'),
+      localAppData: process.env.LOCALAPPDATA,
+      override: process.env.STUDYNEXT_DATA_DIR
+    })
+  )
 }
 
-const userDataPath = resolveUserDataPath()
-app.setPath('userData', userDataPath)
+let startupError: Error | null = null
+try {
+  const userDataPath = resolveUserDataPath()
+  app.setPath('userData', userDataPath)
+} catch (error) {
+  startupError = error instanceof Error ? error : new Error(String(error))
+}
 
-const gotLock = app.requestSingleInstanceLock()
-if (!gotLock) {
+const gotLock = startupError ? false : app.requestSingleInstanceLock()
+if (startupError) {
+  void app.whenReady().then(() => {
+    dialog.showErrorBox(
+      'StudyNext 无法启动',
+      `${startupError?.message ?? '本地数据目录不可用'}\n\n应用不会回退到临时目录，以免关闭后丢失课程和任务数据。`
+    )
+    app.quit()
+  })
+} else if (!gotLock) {
   app.quit()
 } else {
   app.on('second-instance', () => {
@@ -77,6 +84,7 @@ if (!gotLock) {
     .then(initialize)
     .catch((error: unknown) => {
       console.error(`[startup] ${errorMessage(error)}`)
+      dialog.showErrorBox('StudyNext 无法完成初始化', errorMessage(error))
       app.quit()
     })
 }
@@ -89,7 +97,7 @@ async function initialize(): Promise<void> {
   const notices = buildDemoNotices()
   const sync = new SyncService(store)
   const ai = new AiService(store)
-  scheduler = new ReminderScheduler({
+  scheduler = createNotificationScheduler({
     store,
     notify: (event) => showReminderNotification(event),
     onSchedulerEvent: (event) => {

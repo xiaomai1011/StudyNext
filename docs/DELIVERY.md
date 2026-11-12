@@ -1,24 +1,24 @@
-# StudyNext 0.2.0 交付报告
+# StudyNext 0.3.0 交付报告
 
 - 项目目录：`D:\Documents\deepseek-harness\default-workspace\studynext`
-- 版本：`0.2.0`
-- 完成日期：2026-11-11
-- 技术栈：Electron 38.8.6、React 19、TypeScript 5.9、Vite 8、Tailwind CSS 4、SQLite（`node:sqlite`）、Vitest、Playwright、electron-builder
-- Windows 安装包：`release/StudyNext-Setup-0.2.0.exe`
-- 安装包大小：106,052,543 bytes（约 101.1 MiB）
-- SHA-256：`8C409023E37839F1623414D1D5642ECB64FD7AFD68883C8F92279BC59D2226D7`
+- 版本：`0.3.0`
+- 完成日期：2026-11-12
+- 技术栈：Electron 45.3.0、React 19、TypeScript 5.9、Vite 8、Tailwind CSS 4、SQLite（`node:sqlite`）、Vitest、Playwright、electron-builder
+- Windows 安装包：`release/StudyNext-Setup-0.3.0.exe`
+- 安装包大小：125,169,347 bytes（约 119.37 MiB）
+- SHA-256：`FCAFEED57E798D47E94F5ECF3DDC18B46BDD7BA63AD68B07FA25BC1EBE5A54D1`
 
 ## 1. 本轮优化结论
 
-本轮依据用户分享的 ChatGPT 会话进一步扩展 StudyNext，但保留已经验证稳定的 Electron 桌面架构，不把项目重写成未经验证的 MyGo 客户端。落地重点是：
+本轮依据“真实数据接入与可靠性迭代”要求，继续沿用已验证的 Electron + React 架构，不把项目改写成未经验证的 MyGo/Tauri/Go 客户端。落地重点是：
 
-1. 新增“学习中心”：课程 → 章节 → 学习点的层级进度管理。
-2. 新增“题目助手”：本地题库与可选的 OpenAI 兼容 AI 解题思路。
-3. 新增 JSON 学习快照导入，为无正式 API 场景提供可审计的数据入口。
-4. 保持学习通实时同步为 `not_configured`，快照来源固定为 `import`，界面明确显示“本地快照 · 非实时同步”。
-5. 保留原有任务、DDL、日历、Portal 隔离与 CSV/ICS 能力，并补齐单元测试和 E2E。
-
-会话中的自动刷课、自动签到、考试代答、验证码绕过、反爬与私有协议调用未实现，也不会被包装成“同步成功”。
+1. 修复本地数据目录静默回退临时目录的问题：无可用目录时明确报错并退出。
+2. 将 Electron 升级到 45.3.0，在真实 E2E 与打包版中验证启动。
+3. 增加可配置校园 SSO 域名、登录状态机、脱敏导航日志与 Portal 会话清理。
+4. 任务模型增加完成来源、字段来源、手动字段保护、外部 ID 与变更历史；快照支持增量更新、截止变化检测与冲突保留。
+5. 将提醒调度抽象为 `NotificationScheduler`，保留进程内实现并记录 Windows 系统级通知方案。
+6. 重写学习通接入可行性报告：官方 OAuth 无公开个人入口，`xuexitong-cli` 仅作只读研究，不复制、不未授权调用。
+7. 保留学习中心、题库、AI 助手、CSV/ICS/JSON 导入、Portal 隔离与本地优先数据。自动刷课、自动签到、考试代答、验证码绕过、反爬与私有协议调用仍未实现，也不会被包装成同步成功。
 
 ## 2. 完成功能
 
@@ -30,7 +30,7 @@
 - 关闭窗口最小化到托盘，可在设置中关闭；关闭该设置后退出应用。
 - 窗口位置、尺寸与最大化状态持久化，非法或离屏状态自动回退。
 - 单实例锁；深浅色与跟随系统主题；打包版可选开机启动。
-- 主进程数据目录优先 `%LOCALAPPDATA%\StudyNext`，支持 `STUDYNEXT_DATA_DIR` 覆盖。
+- 主进程数据目录按 `%LOCALAPPDATA%\StudyNext`、应用数据目录依次尝试，支持 `STUDYNEXT_DATA_DIR` 覆盖；候选路径均不可写时明确报错退出，**绝不静默回退临时目录**。
 
 ### 2.2 首页仪表盘
 
@@ -70,6 +70,7 @@
 - 课程、章节、学习点按 `(course_id, source, external_id)` 去重；任务外部 ID 带课程前缀，避免跨课程冲突。
 - 作业/考试转为统一任务，返回新增、更新、跳过计数、警告和结构化错误。
 - 快照数据来源固定为 `import`；标题栏、仪表盘和设置页均显示“本地快照 · 非实时同步”。
+- 同一外部 ID 重复导入会更新任务；截止变化清理旧通知投递并计入 `deadlineChanges`；手动字段冲突保留并返回 `conflicts`。
 - 结构示例与完整说明见 [OPTIMIZATION.md](OPTIMIZATION.md)。
 
 ### 2.7 任务中心
@@ -78,7 +79,8 @@
 - 字段：标题、描述、课程归属、优先级、任务类型、截止时间、提醒规则。
 - 按截止时间、优先级、创建时间排序；按状态、优先级、课程筛选与关键词搜索。
 - 按逾期、今天、三天内、以后、已完成分组。
-- 详情弹窗展示课程、截止时间、剩余时间、提醒、来源与描述。
+- 详情弹窗展示课程、截止时间、剩余时间、提醒、来源、完成方式、外部标识与保留的手动字段。
+- 数据层记录任务变更历史：导入/手动来源、截止变化、字段差异与本地完成保护。
 - 操作反馈 Toast，删除二次确认。
 
 ### 2.8 DDL 提醒
@@ -90,7 +92,8 @@
 - 修改截止时间清理旧投递记录；完成、删除任务不再提醒。
 - `notification_deliveries` 去重；通知失败释放占位并允许重试。
 - 系统通知不可用时仍广播应用内提醒事件，不静默丢失 DDL。
-- **应用完全退出后不会继续定时**；界面与文档均明确这一限制。
+- `NotificationScheduler` 已抽象为接口，主进程通过工厂创建，便于后续替换为 Windows 计划任务实现；当前实现仍只在应用进程存活时运行。
+- **应用完全退出后不会继续定时**；界面与文档均明确这一限制，系统级方案见 [WINDOWS_NOTIFICATIONS.md](WINDOWS_NOTIFICATIONS.md)。
 
 ### 2.9 日历
 
@@ -112,13 +115,15 @@
 
 - `WebContentsView` 承载官方网页，独立持久化分区 `persist:studynext-portal`。
 - `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`、无 preload。
-- URL 白名单仅允许 `https` 的 `chaoxing.com` / `xuexitong.com` 及其子域。
+- URL 白名单仅允许 `https`、无 userinfo 的 `chaoxing.com` / `xuexitong.com` 及其子域；校园 SSO 另需显式授权。
+- 可配置校园 SSO 域名；只允许用户明确添加的 HTTPS 精确域名或子域，登录仍由用户在官方页面手动完成。
 - 危险跳转、非白名单弹窗、下载、权限请求与 `webview` 注入均被拦截。
-- 页面加载、失败、阻断、登录状态与安全状态展示。
-- 登录由用户在官方页面手动完成，应用不读取或记录密码。
-- 支持系统浏览器回退、清空官方会话、前进/后退/刷新。
+- 页面加载、失败、阻断、登录状态（unknown/logged_out/logged_in）与安全状态展示。
+- 登录由用户在官方页面手动完成，应用不读取、不记录、不注入密码或 Cookie。
+- 导航诊断日志最多 30 条，只保存动作、允许/拦截原因与去掉 query/hash 的 URL；不保存 Cookie、Token 或页面内容。
+- 支持系统浏览器回退、清空官方会话、前进/后退/刷新、清空导航日志。
 - 官方入口启用/停用、自定义入口、排序。
-- 学习通授权数据适配器接口已定义，但当前固定 `not_configured`，不伪造同步成功。
+- 学习通授权数据适配器接口已定义，但当前固定 `not_configured`，不伪造同步成功；接入可行性见 [CHAOXING_INTEGRATION_FEASIBILITY.md](CHAOXING_INTEGRATION_FEASIBILITY.md)。
 
 ### 2.12 CSV / ICS 导入
 
@@ -129,25 +134,25 @@
 
 ## 3. 技术选型与原因
 
-| 技术                      | 原因                                                              |
-| ------------------------- | ----------------------------------------------------------------- |
-| Electron 38.8.6           | 稳定的 Windows 桌面能力：原生窗口、托盘、通知、WebContentsView    |
-| React 19 + TypeScript     | 组件化 UI；严格类型降低 IPC 与领域模型错误                        |
-| Vite / electron-vite      | 快速开发与三端构建；主进程/preload/renderer 清晰分离              |
-| Tailwind CSS 4 + CSS 变量 | 统一设计令牌，实现深浅色与响应式，不引入重型 UI 框架              |
-| SQLite `node:sqlite`      | 随 Electron 内置，避免 better-sqlite3 等原生模块的 ABI 与打包风险 |
-| date-fns / date-fns-tz    | 本地时区、周/月计算与提醒时间可靠，避免手写日期边界               |
-| Zod                       | IPC 边界输入校验，避免渲染器传入非法数据                          |
-| safeStorage + OpenAI 兼容 | 用户自带 Key，系统加密存储；不内置共享凭据                        |
-| Vitest                    | 领域函数、存储、调度、导入、快照、AI 解析与安全逻辑单测           |
-| Playwright Electron       | 真实 Electron 启动、窗口、持久化、新页面与 WebContentsView 隔离   |
-| electron-builder          | Windows NSIS 安装包与免安装目录                                   |
+| 技术                      | 原因                                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| Electron 45.3.0           | 当前稳定版；Windows 原生窗口、托盘、通知、WebContentsView；已在真实 E2E 与打包版验证 |
+| React 19 + TypeScript     | 组件化 UI；严格类型降低 IPC 与领域模型错误                                           |
+| Vite / electron-vite      | 快速开发与三端构建；主进程/preload/renderer 清晰分离                                 |
+| Tailwind CSS 4 + CSS 变量 | 统一设计令牌，实现深浅色与响应式，不引入重型 UI 框架                                 |
+| SQLite `node:sqlite`      | 随 Electron 内置，避免 better-sqlite3 等原生模块的 ABI 与打包风险                    |
+| date-fns / date-fns-tz    | 本地时区、周/月计算与提醒时间可靠，避免手写日期边界                                  |
+| Zod                       | IPC 边界输入校验，避免渲染器传入非法数据                                             |
+| safeStorage + OpenAI 兼容 | 用户自带 Key，系统加密存储；不内置共享凭据                                           |
+| Vitest                    | 领域函数、存储、调度、导入、快照、AI 解析与安全逻辑单测                              |
+| Playwright Electron       | 真实 Electron 启动、窗口、持久化、新页面与 WebContentsView 隔离                      |
+| electron-builder          | Windows NSIS 安装包与免安装目录                                                      |
 
-Electron 45.3.0 在当前 Windows 自动化环境启动即出现 Chromium 原生崩溃（`0xc0000005`，发生在业务代码加载前），因此选择在相同宿主上验证稳定的 38.8.6。功能与安全配置不受影响；后续可在干净 Windows 10/11 虚拟机复测并升级。
+Electron 45.3.0 已在本轮 E2E、生产构建和打包版启动验证中通过；此前 38.8.6 的默认 profile 启动崩溃已查明与本机默认路径/旧版本有关，不能直接归因于 45 本身。
 
 ## 4. 创建与修改的文件
 
-项目当前包含 91 个受版本管理的项目文件（源码、测试、配置、文档和截图，不含 `node_modules`、`out`、`release`、`test-results` 与 `*.tsbuildinfo`）。
+项目当前包含 95 个受版本管理的项目文件（源码、测试、配置、文档和截图，不含 `node_modules`、`out`、`release`、`test-results` 与 `*.tsbuildinfo`）。
 
 根目录与构建配置：
 
@@ -167,7 +172,7 @@ Electron 45.3.0 在当前 Windows 自动化环境启动即出现 Chromium 原生
 主进程：
 
 - `src/main/index.ts`、`ipc.ts`、`window-state.ts`
-- `src/main/lib/errors.ts`、`time.ts`
+- `src/main/lib/errors.ts`、`time.ts`、`user-data.ts`
 - `src/main/storage/store.ts`
 - `src/main/notifications/scheduler.ts`
 - `src/main/integrations/import.ts`、`sync.ts`、`snapshot.ts`、`ai.ts`
@@ -187,7 +192,7 @@ Electron 45.3.0 在当前 Windows 自动化环境启动即出现 Chromium 原生
 测试：
 
 - `tests/unit/domain.test.ts`、`storage.test.ts`、`scheduler.test.ts`、`import.test.ts`
-- `tests/unit/security.test.ts`、`sync.test.ts`、`snapshot.test.ts`、`ai.test.ts`
+- `tests/unit/security.test.ts`、`sync.test.ts`、`snapshot.test.ts`、`ai.test.ts`、`user-data.test.ts`
 - `tests/e2e/app.spec.ts`、`features.spec.ts`、`portal.spec.ts`、`responsive.spec.ts`、`views.spec.ts`
 - `tests/fixtures/portal-test.crt`、`portal-test.key`
 
@@ -195,6 +200,7 @@ Electron 45.3.0 在当前 Windows 自动化环境启动即出现 Chromium 原生
 
 - `docs/research.md`、`ARCHITECTURE.md`、`TEST_REPORT.md`、`ROADMAP.md`
 - `docs/OPTIMIZATION.md`、`DELIVERY.md`、`ISSUES.md`
+- `docs/CHAOXING_INTEGRATION_FEASIBILITY.md`、`WINDOWS_NOTIFICATIONS.md`
 - `docs/screenshots/` 下 9 张浅色/深色与学习中心/题目助手截图
 
 ## 5. 启动与安装
@@ -213,7 +219,7 @@ npm run build
 npm run build:win
 ```
 
-安装包：`release/StudyNext-Setup-0.2.0.exe`。也可直接运行 `release/win-unpacked/StudyNext.exe`。
+安装包：`release/StudyNext-Setup-0.3.0.exe`。也可直接运行 `release/win-unpacked/StudyNext.exe`。
 
 如果终端预设了 `ELECTRON_RUN_AS_NODE=1`，启动 GUI 前必须清除。自动化环境可设置：
 
@@ -224,26 +230,26 @@ $env:STUDYNEXT_DATA_DIR = "D:\StudyNextData"
 ## 6. 验证结果
 
 - TypeScript 严格检查：通过。
-- Vitest：8 个文件、40 项全部通过。
-- Playwright E2E：5 个规格全部通过（应用主流程、学习中心/题库/快照、Portal、响应式、视图截图）。
+- Vitest：9 个文件、47 项全部通过。
+- Playwright E2E：5 个规格文件、6 项测试全部通过（应用主流程、学习中心/题库/快照与 SSO、Portal 隔离与脱敏日志、响应式、视图截图）。
 - 应用主流程：无账号启动、5 门课程、15 项任务、CRUD、重启持久化、渲染进程隔离。
 - 学习中心/题库：15 章节、60 学习点、学习点完成、题目卡 CRUD、JSON 快照导入。
-- Portal：真实 `WebContentsView` 内 `require/process/module/window.studynext/window.ipcRenderer` 全部不可见，白名单外跳转被拦截。
+- Portal：真实 `WebContentsView` 内 `require/process/module/window.studynext/window.ipcRenderer` 全部不可见，白名单外跳转被拦截，外部 URL 的 query 不进入公开状态/日志。
 - 响应式：1080×700 下 8 个主要页面无横向溢出。
 - 视觉：浅色/深色全部主要视图截图通过目检。
-- 生产构建：主进程 118.96 kB、preload 5.58 kB、renderer JS 912.81 kB、CSS 66.11 kB。
-- Windows 安装包：106,052,543 bytes，约 101.1 MiB。
-- 打包版启动验证：窗口标题“学习总览”，版本 `0.2.0`，`packaged: true`。
+- 生产构建：通过（main 135.12 kB、preload 5.83 kB、renderer JS 920.50 kB、CSS 67.98 kB）。
+- Windows 安装包：`release/StudyNext-Setup-0.3.0.exe`，125,169,347 bytes，SHA-256 `FCAFEED57E798D47E94F5ECF3DDC18B46BDD7BA63AD68B07FA25BC1EBE5A54D1`。
+- 打包版启动验证：通过，窗口标题 `学习总览`、版本 `0.3.0`、`packaged: true`。
 
 详细记录见 [TEST_REPORT.md](TEST_REPORT.md)。
 
 ## 7. 尚未完成的功能
 
 - 学习通真实账号 OAuth 与课程/作业自动同步：无公开可申请接口，保持 `not_configured`。
-- 应用完全退出后的系统级 DDL 提醒：未实现计划任务或常驻服务，只做启动补发。
-- 官方页面登录状态的精确校验：当前基于官方 URL 路径的启发式判断，不是令牌验证。
+- 应用完全退出后的系统级 DDL 提醒：仅完成调度抽象和 Windows 方案调研，未安装计划任务或常驻服务。
+- 官方页面登录状态的精确校验：当前基于官方 URL 路径的启发式判断，不是令牌验证；真实账号流程未自动化验证。
 - 单双周课程、调休、节假日：月/周视图按每周固定课表展示。
-- 学习快照定时拉取、增量同步与冲突合并：当前只支持手动 JSON 导入。
+- 学习快照的定时拉取/自动更新：当前只支持用户手动选择 JSON；同一快照重复导入已支持增量更新与冲突保留。
 - AI 服务商模型质量、费用与数据保留策略由用户自行选择；应用不内置共享 Key，也未做自动提交。
 - 安装包代码签名、自动更新、崩溃上报：未接入。
 - 真实学习通账号登录 E2E：未使用真实账号；隔离层已用本地 HTTPS 域名测试证书验证。
@@ -264,7 +270,7 @@ $env:STUDYNEXT_DATA_DIR = "D:\StudyNextData"
 4. 为“退出后提醒”设计可选常驻服务或 Windows 计划任务，明确权限、安装、卸载与代码签名要求。
 5. 增加快照增量合并、冲突解决与来源校验；继续保留手动导入作为无 API 回退。
 6. 接入代码签名、自动更新、崩溃日志脱敏与版本回滚。
-7. 在干净 Windows 10/11 虚拟机复测 Electron 最新稳定版并升级。
+7. 在干净 Windows 10/11 虚拟机执行真实登录回归清单（不收集密码/Cookie/Token），加强登录状态检测并校验 SSO 跳转。
 8. 增加可访问性、键盘导航、长列表性能与真实账号授权后的端到端测试。
 
 ## 10. 仓库状态

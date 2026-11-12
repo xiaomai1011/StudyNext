@@ -71,18 +71,19 @@ src/
 
 SQLite 文件：`%LOCALAPPDATA%\StudyNext\studynext.sqlite`（可用 `STUDYNEXT_DATA_DIR` 覆盖）。
 
-| 表                        | 作用          | 关键约束                                                           |
-| ------------------------- | ------------- | ------------------------------------------------------------------ |
-| `courses`                 | 课程与课表    | `schedule_json` 存 `CourseSession[]`；收藏 0/1；`external_id` 可空 |
-| `course_chapters`         | 课程章节      | `(course_id, source, external_id)` 唯一；删除课程级联              |
-| `study_points`            | 学习点        | `(course_id, source, external_id)` 唯一；记录完成状态/耗时         |
-| `tasks`                   | 任务与 DDL    | `status`、`priority`、`kind` CHECK；`(source, external_id)` 唯一   |
-| `task_reminders`          | 提醒规则      | `(task_id, offset_minutes)` 唯一；offset ≥ 5 分钟                  |
-| `notification_deliveries` | 通知去重      | 主键 `dedupe_key`，task/rule/due_at 三元组                         |
-| `questions`               | 题目卡        | 题干/答案/解析/标签 JSON/来源；课程可空                            |
-| `settings`                | 键值设置      | JSON 值                                                            |
-| `official_entries`        | 官方入口      | 内置/自定义、启用、排序                                            |
-| `app_meta`                | schema 版本等 | 迁移锚点；AI Key 密文与快照元数据也存此表                          |
+| 表                        | 作用          | 关键约束                                                                                                                                               |
+| ------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `courses`                 | 课程与课表    | `schedule_json` 存 `CourseSession[]`；收藏 0/1；`external_id` 可空                                                                                     |
+| `course_chapters`         | 课程章节      | `(course_id, source, external_id)` 唯一；删除课程级联                                                                                                  |
+| `study_points`            | 学习点        | `(course_id, source, external_id)` 唯一；记录完成状态/耗时                                                                                             |
+| `tasks`                   | 任务与 DDL    | `status`、`priority`、`kind` CHECK；`(source, external_id)` 唯一；`completion_source`、`source_updated_at`、`manual_fields_json`、`field_sources_json` |
+| `task_change_log`         | 任务变更历史  | 任务级联删除；记录 origin、摘要与逐字段变化                                                                                                            |
+| `task_reminders`          | 提醒规则      | `(task_id, offset_minutes)` 唯一；offset ≥ 5 分钟                                                                                                      |
+| `notification_deliveries` | 通知去重      | 主键 `dedupe_key`，task/rule/due_at 三元组                                                                                                             |
+| `questions`               | 题目卡        | 题干/答案/解析/标签 JSON/来源；课程可空                                                                                                                |
+| `settings`                | 键值设置      | JSON 值                                                                                                                                                |
+| `official_entries`        | 官方入口      | 内置/自定义、启用、排序                                                                                                                                |
+| `app_meta`                | schema 版本等 | 迁移锚点；AI Key 密文与快照元数据也存此表                                                                                                              |
 
 外键开启 `PRAGMA foreign_keys = ON`。删除任务级联清理提醒与投递记录；修改截止时间主动清理旧投递，保证改期后能再次提醒。
 
@@ -91,7 +92,7 @@ SQLite 文件：`%LOCALAPPDATA%\StudyNext\studynext.sqlite`（可用 `STUDYNEXT_
 - `Course`：`id/externalId/name/code/teacher/semester/category/color/favorite/schedule/source/sourceUrl`。
 - `Chapter`：`id/courseId/externalId/title/sortOrder/progress/points/lastStudiedAt/source`。
 - `StudyPoint`：`id/chapterId/courseId/externalId/title/kind/status/durationMinutes/sortOrder/source`；类型包括阅读、视频、测验、讨论、作业。
-- `Task`：`id/title/description/courseId/priority/kind/status/dueAt/completedAt/source/externalId/reminders`。
+- `Task`：`id/title/description/courseId/priority/kind/status/dueAt/completedAt/completionSource/source/externalId/sourceUpdatedAt/manualFields/fieldSources/reminders`。`completionSource` 区分本地完成与平台完成；`manualFields` 保护本地修改不被后续导入覆盖。
 - `QuestionCard`：`id/question/answer/explanation/courseId/tags/source/createdAt/updatedAt`。
 - `ReminderRule`：`id/taskId/offsetMinutes/enabled`。
 - `SyncStatus`：`state/message/source/lastAttemptAt/lastSuccessAt/detail/snapshot`。
@@ -102,7 +103,7 @@ SQLite 文件：`%LOCALAPPDATA%\StudyNext\studynext.sqlite`（可用 `STUDYNEXT_
 渲染器只能访问 `window.studynext`：
 
 - `bootstrap()`
-- `tasks.create/update/remove/setCompleted`
+- `tasks.create/update/remove/setCompleted/history`
 - `courses.setFavorite`
 - `study.setPointCompleted`
 - `questions.create/update/remove`
@@ -111,7 +112,7 @@ SQLite 文件：`%LOCALAPPDATA%\StudyNext\studynext.sqlite`（可用 `STUDYNEXT_
 - `demo.reset`
 - `imports.csvIcs/snapshot`
 - `sync.status/run`
-- `portal.open/close/back/forward/reload/clearSession/openInitialInBrowser/setBounds/securityState`
+- `portal.open/close/back/forward/reload/clearSession/clearNavigationLog/openInitialInBrowser/setBounds/securityState`
 - `entries.create/updateEnabled/remove`
 - `window.minimize/toggleMaximize/close/quit/isMaximized`
 - `app.onNavigate/onReminder/onFocusTask/openDataDirectory/openExternal`
@@ -135,7 +136,8 @@ dueAt - offsetMinutes = scheduledFor
 - 投递前 `claimDelivery` 写入唯一 key；通知失败 `releaseDelivery` 回滚，允许下次重试。
 - 系统不支持 `Notification` 时，调度器继续运行并通过 `event:reminder` 推送应用内提醒；能力状态由 `reminderRuntime.systemNotificationsSupported` 暴露。
 - 修改截止时间会删除该任务旧投递；完成/删除任务不再产生候选。
-- **进程退出后定时器不存在**。这是明确的产品限制，不伪造后台能力。
+- `NotificationScheduler` 是接口，`createNotificationScheduler()` 是唯一工厂；当前实现仍是进程内调度器，可替换为 Windows 计划任务实现而不改 IPC。
+- **进程退出后定时器不存在**。这是明确的产品限制，不伪造后台能力。Windows 系统级方案的调研与推荐路线见 [WINDOWS_NOTIFICATIONS.md](WINDOWS_NOTIFICATIONS.md)。
 
 ## 7. Portal 安全模型
 
@@ -158,18 +160,19 @@ dueAt - offsetMinutes = scheduledFor
 
 URL 规则：
 
-- 只允许 `https:`。
-- host 必须等于或属于 `chaoxing.com` / `xuexitong.com`。
-- 拒绝 `javascript:`、`file:`、`data:`、`about:` 以及未知域名。
+- 只允许 `https:`，拒绝带 userinfo 的地址；官方入口域名必须是学习通域名或子域。
+- 基础 host 必须等于或属于 `chaoxing.com` / `xuexitong.com`。
+- 用户可以在设置中添加校园 SSO 域名；只允许 HTTPS、443、无 userinfo 的精确域名或子域，最多 20 个。
+- 拒绝 `javascript:`、`file:`、`data:`、`about:` 以及不在白名单中的域名。
 - `will-navigate`、`will-redirect`、`setWindowOpenHandler`、`will-attach-webview`、下载与权限请求全部拦截。
 - 会话隔离在 `persist:studynext-portal`，清空会话会清理 storage 与 cache。
+- 导航日志最多 30 条，只保存 `action/allowed/reason` 和去掉 query/hash 的 URL；不保存 Cookie、Token 或页面内容。
 
 登录状态仅为 UI 提示：
 
-- `passport` 路径判定为未登录；
-- `i.chaoxing.com` 判定为已登录；
-- 其他页面为未知。
-  这不是 token 验证，不应被描述为“已接入账号体系”。
+- `passport`、登录页或 `cas` 路径判定为 `logged_out`；
+- `i.chaoxing.com/base`、`i.chaoxing.com/visit`，或从已登出状态回到官方域，判定为 `logged_in`；
+- 其他页面为 `unknown`。这是启发式状态，不是 token 校验，不应被描述为“已接入账号体系”。
 
 ## 8. 导入与同步
 
@@ -218,7 +221,7 @@ interface AuthorizedDataAdapter {
 }
 ```
 
-`ChaoxingAuthorizedAdapter.isConfigured()` 当前固定 `false`，`pull()` 抛出“学习通授权数据源尚未配置”。`SyncService` 因此返回 `not_configured`，绝不伪造 `success`。
+`ChaoxingAuthorizedAdapter.isConfigured()` 当前固定 `false`，`pull()` 抛出“学习通授权数据源尚未配置”。`SyncService` 因此返回 `not_configured`，绝不伪造 `success`。公开 OAuth 入口、个人开发者限制与只读接口风险见 [CHAOXING_INTEGRATION_FEASIBILITY.md](CHAOXING_INTEGRATION_FEASIBILITY.md)。
 
 ## 9. UI 架构
 
@@ -232,23 +235,23 @@ interface AuthorizedDataAdapter {
 
 ## 10. 测试策略
 
-- 单元测试：领域排序/分组/统计、SQLite CRUD/重启、提醒候选/去重、CSV/ICS、JSON 快照、AI 请求构造、URL 白名单与 webPreferences。
-- E2E：真实 Electron 启动、首页模拟数据、任务 CRUD、关闭重启持久化、学习点完成、题库 CRUD、快照导入、`window.studynext` 暴露面、所有主要页面与深浅色截图。
+- 单元测试：领域排序/分组/统计、SQLite CRUD/重启、增量导入与手动字段冲突、提醒候选/去重、CSV/ICS、JSON 快照、AI 请求构造、URL 白名单、SSO 域名与数据目录解析。
+- E2E：真实 Electron 启动、首页模拟数据、任务 CRUD、关闭重启持久化、学习点完成、题库 CRUD、快照导入、`window.studynext` 暴露面、Portal 隔离/脱敏日志、所有主要页面与深浅色截图。
 - 打包验证：`npm run build:win` 产出 NSIS 安装包；可运行 `release/win-unpacked/StudyNext.exe` 验证 asar 内资源与 preload 路径。
 
 ## 11. 关键决策
 
-| 决策                  | 原因                                          | 代价                                 |
-| --------------------- | --------------------------------------------- | ------------------------------------ |
-| 使用 `node:sqlite`    | 免原生模块编译，Electron 38 内置 Node 22 支持 | API 较新，迁移到更老 Electron 不可用 |
-| 无 ORM                | 数据库小、查询可控、打包体积小                | 需要手写映射与迁移                   |
-| 日期存 ISO 字符串     | 跨进程/JSON 简单、可排序                      | 展示层必须统一本地化                 |
-| 无全局状态库          | 页面规模可控，减少依赖                        | props 传递较多                       |
-| Portal 不注入 preload | 最大化隔离远程内容                            | 无法在网页内做深度集成               |
-| 快照来源标记 `import` | 本地 JSON 不能冒充实时学习通同步              | 用户需手动更新文件                   |
-| AI 使用用户自带 Key   | 不内置共享凭据、不产生平台代答                | 用户需自行配置服务商                 |
-| 提醒仅在主进程运行    | 不伪造后台能力                                | 退出后无提醒                         |
-| Electron 38.8.6       | 当前测试环境 45 启动崩溃，38 稳定             | 不是最新大版本                       |
+| 决策                  | 原因                                                | 代价                                 |
+| --------------------- | --------------------------------------------------- | ------------------------------------ |
+| 使用 `node:sqlite`    | 免原生模块编译，Electron 38 内置 Node 22 支持       | API 较新，迁移到更老 Electron 不可用 |
+| 无 ORM                | 数据库小、查询可控、打包体积小                      | 需要手写映射与迁移                   |
+| 日期存 ISO 字符串     | 跨进程/JSON 简单、可排序                            | 展示层必须统一本地化                 |
+| 无全局状态库          | 页面规模可控，减少依赖                              | props 传递较多                       |
+| Portal 不注入 preload | 最大化隔离远程内容                                  | 无法在网页内做深度集成               |
+| 快照来源标记 `import` | 本地 JSON 不能冒充实时学习通同步                    | 用户需手动更新文件                   |
+| AI 使用用户自带 Key   | 不内置共享凭据、不产生平台代答                      | 用户需自行配置服务商                 |
+| 提醒仅在主进程运行    | 不伪造后台能力                                      | 退出后无提醒                         |
+| Electron 45.3.0       | 当前基线；隔离 user-data-dir 下 E2E/构建/打包均通过 | 干净 Windows 发布前仍需回归          |
 
 ## 12. 后续演进
 

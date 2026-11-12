@@ -41,7 +41,7 @@
 
 ## 2. 功能对比
 
-| 能力          | chaoxing-list   | study_assistant | student-portal | StudyNext 0.2.0      |
+| 能力          | chaoxing-list   | study_assistant | student-portal | StudyNext 0.3.0      |
 | ------------- | --------------- | --------------- | -------------- | -------------------- |
 | 课程聚合      | 是              | 是              | 入口导航       | 是（本地/导入）      |
 | 作业/考试 DDL | 是              | 是              | 否             | 是（本地/导入）      |

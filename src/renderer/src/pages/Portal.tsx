@@ -10,7 +10,12 @@ import {
   Trash2,
   X
 } from 'lucide-react'
-import type { OfficialEntry, PortalSecurityState, PortalState } from '@shared/types'
+import type {
+  OfficialEntry,
+  PortalLoginState,
+  PortalSecurityState,
+  PortalState
+} from '@shared/types'
 import type { ToastKind } from '../components/ToastStack'
 import { errorMessage } from '../lib/format'
 
@@ -30,7 +35,22 @@ const EMPTY_STATE: PortalState = {
   canGoBack: false,
   canGoForward: false,
   loggedIn: null,
+  loginState: 'unknown',
+  navigationLog: [],
   error: null
+}
+
+const LOGIN_STATE_LABEL: Record<PortalLoginState, string> = {
+  unknown: '登录状态未知',
+  logged_out: '未登录',
+  logged_in: '已登录'
+}
+
+const NAV_ACTION_LABEL: Record<string, string> = {
+  open: '打开',
+  navigate: '跳转',
+  blocked: '拦截',
+  popup: '弹窗'
 }
 
 export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: PortalProps) {
@@ -133,7 +153,15 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
   }
 
   const loginLabel =
-    state.loggedIn === true ? '已登录' : state.loggedIn === false ? '未登录' : '登录状态未知'
+    state.loginState === 'logged_in'
+      ? '已登录'
+      : state.loginState === 'logged_out'
+        ? '未登录'
+        : state.loggedIn === true
+          ? '已登录'
+          : state.loggedIn === false
+            ? '未登录'
+            : '登录状态未知'
   const statusClass =
     state.state === 'ready'
       ? 'ready'
@@ -279,6 +307,48 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
           </span>
         </div>
       ) : null}
+
+      <details className="portal-audit">
+        <summary>
+          导航诊断 · {state.navigationLog.length} 条记录（URL 已去除查询参数与片段）
+        </summary>
+        <div className="portal-audit-head">
+          <span>只记录页面跳转，不记录账号、密码或 Cookie。</span>
+          <button
+            type="button"
+            className="text-link"
+            disabled={state.navigationLog.length === 0}
+            onClick={() => {
+              void api.portal
+                .clearNavigationLog()
+                .then(() => api.portal.state())
+                .then((next) => setState(next))
+                .catch((error: unknown) => notify('error', errorMessage(error)))
+            }}
+          >
+            清空记录
+          </button>
+        </div>
+        {state.navigationLog.length === 0 ? (
+          <div className="portal-audit-empty">尚无导航记录。</div>
+        ) : (
+          <div className="portal-audit-list">
+            {state.navigationLog.map((item) => (
+              <div className={`portal-audit-row ${item.allowed ? '' : 'blocked'}`} key={item.id}>
+                <span className="portal-audit-action">
+                  {NAV_ACTION_LABEL[item.action] ?? item.action}
+                </span>
+                <span className="portal-audit-url" title={item.displayUrl}>
+                  {item.displayUrl}
+                </span>
+                <span className="portal-audit-state">
+                  {item.allowed ? '允许' : `拦截：${item.reason ?? '域名未授权'}`}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
 
       {active ? (
         <div className="portal-stage" ref={stageRef} style={{ minHeight: 320 }}>

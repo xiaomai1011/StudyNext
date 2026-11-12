@@ -21,6 +21,18 @@ const reminderOffsets = z
   .max(12, '每个任务最多设置 12 条提醒')
   .default([])
 
+const ssoDomain = z
+  .string()
+  .trim()
+  .toLowerCase()
+  .min(3, 'SSO 域名格式无效')
+  .max(253, 'SSO 域名过长')
+  .refine(
+    (value) =>
+      /^(?=.{3,253}$)(?!-)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/.test(value),
+    'SSO 域名格式无效'
+  )
+
 export const taskUpsertSchema = z
   .object({
     title: taskTitle,
@@ -44,7 +56,8 @@ export const settingsPatchSchema = z
     notificationsEnabled: z.boolean().optional(),
     defaultReminderOffsets: z.array(z.number().int().min(5).max(43200)).max(12).optional(),
     calendarWeekStartsOn: z.union([z.literal(0), z.literal(1)]).optional(),
-    catchUpMissedReminders: z.boolean().optional()
+    catchUpMissedReminders: z.boolean().optional(),
+    trustedSsoDomains: z.array(ssoDomain).max(20, '最多配置 20 个 SSO 域名').optional()
   })
   .strict()
 

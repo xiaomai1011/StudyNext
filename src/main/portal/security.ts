@@ -5,6 +5,7 @@ export function isAllowedPortalUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl)
     if (url.protocol !== 'https:') return false
+    if (url.username || url.password) return false
     const hostname = url.hostname.toLocaleLowerCase()
     return ALLOWED_PORTAL_HOSTS.some(
       (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
@@ -12,6 +13,31 @@ export function isAllowedPortalUrl(rawUrl: string): boolean {
   } catch {
     return false
   }
+}
+
+export function isTrustedSsoUrl(rawUrl: string, trustedDomains: readonly string[]): boolean {
+  if (trustedDomains.length === 0) return false
+  try {
+    const url = new URL(rawUrl)
+    if (url.protocol !== 'https:') return false
+    if (url.username || url.password) return false
+    if (url.port && url.port !== '443') return false
+    const hostname = url.hostname.toLocaleLowerCase()
+    return trustedDomains.some((rawDomain) => {
+      const domain = rawDomain.trim().toLocaleLowerCase()
+      if (!domain || domain.includes('*') || domain.includes('/')) return false
+      return hostname === domain || hostname.endsWith(`.${domain}`)
+    })
+  } catch {
+    return false
+  }
+}
+
+export function isPortalNavigationAllowed(
+  rawUrl: string,
+  trustedSsoDomains: readonly string[]
+): boolean {
+  return isAllowedPortalUrl(rawUrl) || isTrustedSsoUrl(rawUrl, trustedSsoDomains)
 }
 
 export function safeDisplayUrl(rawUrl: string): string {

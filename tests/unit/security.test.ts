@@ -3,6 +3,8 @@ import {
   buildPortalSecurityState,
   buildPortalWebPreferences,
   isAllowedPortalUrl,
+  isPortalNavigationAllowed,
+  isTrustedSsoUrl,
   safeDisplayUrl
 } from '../../src/main/portal/security'
 import { StudyNextStore } from '../../src/main/storage/store'
@@ -25,6 +27,7 @@ describe('官方页面隔离层', () => {
     expect(isAllowedPortalUrl('https://www.xuexitong.com/')).toBe(true)
     expect(isAllowedPortalUrl('https://chaoxing.com.evil.example/')).toBe(false)
     expect(isAllowedPortalUrl('http://i.chaoxing.com/')).toBe(false)
+    expect(isAllowedPortalUrl('https://user:pass@i.chaoxing.com/')).toBe(false)
     expect(isAllowedPortalUrl('https://evil.example/?next=chaoxing.com')).toBe(false)
     expect(isAllowedPortalUrl('javascript:alert(1)')).toBe(false)
     expect(isAllowedPortalUrl('file:///C:/Windows/win.ini')).toBe(false)
@@ -52,6 +55,22 @@ describe('官方页面隔离层', () => {
       'https://i.chaoxing.com/base'
     )
     expect(safeDisplayUrl('not a url')).toBe('')
+  })
+
+  it('校园 SSO 白名单只接受配置域名的 HTTPS 精确域或子域', () => {
+    const domains = ['sso.example.edu.cn', 'cas.example.edu.cn']
+    expect(isTrustedSsoUrl('https://sso.example.edu.cn/cas/login', domains)).toBe(true)
+    expect(isTrustedSsoUrl('https://login.sso.example.edu.cn/cas', domains)).toBe(true)
+    expect(isTrustedSsoUrl('https://sso.example.edu.cn.evil.test/cas', domains)).toBe(false)
+    expect(isTrustedSsoUrl('http://sso.example.edu.cn/cas', domains)).toBe(false)
+    expect(isTrustedSsoUrl('https://user:pass@sso.example.edu.cn/cas', domains)).toBe(false)
+    expect(isTrustedSsoUrl('https://sso.example.edu.cn:8443/cas', domains)).toBe(false)
+    expect(isTrustedSsoUrl('https://*.example.edu.cn/cas', domains)).toBe(false)
+    expect(isTrustedSsoUrl('https://sso.example.edu.cn/cas', [])).toBe(false)
+    expect(
+      isPortalNavigationAllowed('https://sso.example.edu.cn/cas/login', ['sso.example.edu.cn'])
+    ).toBe(true)
+    expect(isPortalNavigationAllowed('https://i.chaoxing.com/', ['sso.example.edu.cn'])).toBe(true)
   })
 })
 

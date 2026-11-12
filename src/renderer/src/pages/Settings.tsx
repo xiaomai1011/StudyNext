@@ -115,6 +115,8 @@ export function Settings({
   const [entryLabel, setEntryLabel] = useState('')
   const [entryUrl, setEntryUrl] = useState('')
   const [entryKind, setEntryKind] = useState<OfficialEntry['kind']>('custom')
+  const [ssoDomainsText, setSsoDomainsText] = useState(settings.trustedSsoDomains.join('\n'))
+  const [ssoSaving, setSsoSaving] = useState(false)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const snapshotInput = useRef<HTMLInputElement | null>(null)
 
@@ -140,6 +142,10 @@ export function Settings({
       alive = false
     }
   }, [])
+
+  useEffect(() => {
+    setSsoDomainsText(settings.trustedSsoDomains.join('\n'))
+  }, [settings.trustedSsoDomains])
 
   const update = async (patch: Partial<AppSettings>, message?: string): Promise<void> => {
     try {
@@ -292,6 +298,26 @@ export function Settings({
       notify('error', errorMessage(error))
     } finally {
       setBusy(false)
+    }
+  }
+
+  const saveSsoDomains = async (): Promise<void> => {
+    const domains = [
+      ...new Set(
+        ssoDomainsText
+          .split(/[\s,;]+/)
+          .map((value) => value.trim().toLowerCase())
+          .filter(Boolean)
+      )
+    ]
+    setSsoSaving(true)
+    try {
+      await onUpdateSettings({ trustedSsoDomains: domains })
+      notify('success', domains.length > 0 ? '校园 SSO 域名已保存' : '校园 SSO 域名已清空')
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setSsoSaving(false)
     }
   }
 
@@ -701,6 +727,37 @@ export function Settings({
                 </div>
               </div>
 
+              <div className="settings-form" style={{ marginTop: 14 }}>
+                <div className="field full">
+                  <label className="label" htmlFor="sso-domains">
+                    校园 SSO 域名（可选）
+                  </label>
+                  <textarea
+                    id="sso-domains"
+                    className="textarea"
+                    rows={4}
+                    value={ssoDomainsText}
+                    onChange={(event) => setSsoDomainsText(event.target.value)}
+                    placeholder={'例如：sso.example.edu.cn\n多个域名可换行或逗号分隔'}
+                  />
+                  <div className="hint">
+                    仅用于允许官方登录页跳转到你所在学校的 HTTPS 统一认证域名；支持子域，不支持
+                    http、通配符或任意第三方站点。登录仍由你在官方页面手动完成。
+                  </div>
+                </div>
+                <div className="settings-actions">
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => void saveSsoDomains()}
+                    disabled={ssoSaving}
+                  >
+                    <Save size={13} /> {ssoSaving ? '保存中…' : '保存 SSO 域名'}
+                  </button>
+                  <span className="hint">留空表示只允许学习通官方域名。</span>
+                </div>
+              </div>
+
               <div className="security-card">
                 <div className="security-title">
                   <LockKeyhole /> 兼容层安全基线
@@ -934,8 +991,15 @@ export function Settings({
                   <div style={{ marginTop: 4 }}>
                     新增课程 {snapshotResult.importedCourses} · 更新课程{' '}
                     {snapshotResult.updatedCourses} · 章节 {snapshotResult.importedChapters} ·
-                    学习点 {snapshotResult.importedPoints} · 任务 {snapshotResult.importedTasks}
+                    学习点 {snapshotResult.importedPoints} · 新增任务 {snapshotResult.importedTasks}{' '}
+                    · 更新任务 {snapshotResult.updatedTasks}
                   </div>
+                  {snapshotResult.deadlineChanges > 0 || snapshotResult.conflicts > 0 ? (
+                    <div style={{ marginTop: 4 }}>
+                      截止时间变化 {snapshotResult.deadlineChanges} · 保留本地修改{' '}
+                      {snapshotResult.conflicts}
+                    </div>
+                  ) : null}
                   {snapshotResult.warnings.length > 0 ? (
                     <div className="import-warning">
                       {snapshotResult.warnings.slice(0, 5).join('；')}

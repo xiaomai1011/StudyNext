@@ -1,5 +1,6 @@
 import { BrowserWindow, WebContentsView, session, shell } from 'electron'
-import type { PortalState } from '@shared/types'
+import { randomUUID } from 'node:crypto'
+import type { PortalLoginState, PortalNavigationEvent, PortalState } from '@shared/types'
 import { PORTAL_PARTITION } from '@shared/constants'
 import type { StudyNextStore } from '../storage/store'
 import { UserFacingError } from '../lib/errors'
@@ -7,6 +8,7 @@ import {
   buildPortalSecurityState,
   buildPortalWebPreferences,
   isAllowedPortalUrl,
+  isPortalNavigationAllowed,
   safeDisplayUrl
 } from './security'
 
@@ -26,6 +28,8 @@ const IDLE_STATE: PortalState = {
   canGoBack: false,
   canGoForward: false,
   loggedIn: null,
+  loginState: 'unknown',
+  navigationLog: [],
   error: null
 }
 
@@ -34,6 +38,7 @@ export class PortalService {
   private state: PortalState = { ...IDLE_STATE }
   private bounds: Rect = { x: 0, y: 0, width: 0, height: 0 }
   private sessionConfigured = false
+  private currentUrl = ''
 
   constructor(
     private readonly store: StudyNextStore,
@@ -41,7 +46,7 @@ export class PortalService {
   ) {}
 
   getState(): PortalState {
-    return { ...this.state }
+    return { ...this.state, navigationLog: [...this.state.navigationLog] }
   }
 
   getSecurityState() {
@@ -84,10 +89,13 @@ export class PortalService {
     this.state = {
       ...IDLE_STATE,
       entryId,
-      url: entry.url,
+      url: safeDisplayUrl(entry.url),
       displayUrl: safeDisplayUrl(entry.url),
-      state: 'loading'
+      state: 'loading',
+      navigationLog: this.state.navigationLog
     }
+    this.currentUrl = entry.url
+    this.appendNavigation('open', entry.url, true, null)
     this.emit()
     try {
       await view.webContents.loadURL(entry.url)
@@ -101,14 +109,18 @@ export class PortalService {
 
   close(): void {
     this.destroyView()
-    this.state = { ...IDLE_STATE }
+    this.currentUrl = ''
+    this.state = { ...IDLE_STATE, navigationLog: this.state.navigationLog }
     this.emit()
   }
 
   async openInitialInBrowser(): Promise<void> {
-    const target = this.state.url || this.store.listOfficialEntries()[0]?.url
-    if (!target || !isAllowedPortalUrl(target)) {
-      throw new UserFacingError('PORTAL_URL_BLOCKED', '当前地址不属于学习通官方域名')
+    const target = this.currentUrl || this.store.listOfficialEntries()[0]?.url
+    if (!target || !this.isNavigationAllowed(target)) {
+      throw new UserFacingError(
+        'PORTAL_URL_BLOCKED',
+        '当前地址不属于学习通官方域名或已授权的校园 SSO 域名'
+      )
     }
     await shell.openExternal(target)
   }
@@ -134,6 +146,10 @@ export class PortalService {
     this.close()
   }
 
+  async clearNavigationLog(): Promise<void> {
+    this.updateState({ navigationLog: [] })
+  }
+
   destroy(): void {
     this.destroyView()
   }
@@ -157,10 +173,11 @@ export class PortalService {
   private attachSecurityHandlers(view: WebContentsView): void {
     const contents = view.webContents
     const blockNavigation = (url: string): boolean => {
-      if (isAllowedPortalUrl(url)) return false
+      if (this.isNavigationAllowed(url)) return false
+      this.appendNavigation('blocked', url, false, '非学习通官方域名或未授权的校园 SSO 域名')
       this.updateState({
         state: 'blocked',
-        error: '已拦截非学习通官方域名的跳转；可使用系统浏览器打开官方入口'
+        error: '已拦截未授权域名的跳转；可在设置中添加受信任的校园 SSO 域名，或使用系统浏览器'
       })
       return true
     }
@@ -175,12 +192,14 @@ export class PortalService {
       event.preventDefault()
     })
     contents.setWindowOpenHandler(({ url }) => {
-      if (isAllowedPortalUrl(url)) {
+      if (this.isNavigationAllowed(url)) {
+        this.appendNavigation('open', url, true, null)
         void contents.loadURL(url)
       } else {
+        this.appendNavigation('blocked', url, false, '弹窗目标域名未授权')
         this.updateState({
           state: 'blocked',
-          error: '已拦截弹窗跳转；可使用系统浏览器打开官方入口'
+          error: '已拦截未授权弹窗；可使用系统浏览器打开官方入口'
         })
       }
       return { action: 'deny' }
@@ -195,19 +214,20 @@ export class PortalService {
       'did-fail-load',
       (_event, errorCode, errorDescription, validatedUrl, isMainFrame) => {
         if (!isMainFrame || errorCode === -3) return
+        this.currentUrl = validatedUrl
         this.updateState({
           state: 'error',
-          url: validatedUrl,
+          url: safeDisplayUrl(validatedUrl),
           displayUrl: safeDisplayUrl(validatedUrl),
           error: `页面加载失败（${errorDescription || errorCode}），可尝试系统浏览器`
         })
       }
     )
     contents.on('did-navigate', (_event, url) => {
-      this.applyNavigatedUrl(url)
+      this.applyNavigatedUrl(url, 'navigate')
     })
     contents.on('did-navigate-in-page', (_event, url) => {
-      this.applyNavigatedUrl(url)
+      this.applyNavigatedUrl(url, 'navigate')
     })
     contents.on('page-title-updated', (_event, title) => {
       this.updateState({ title })
@@ -225,26 +245,71 @@ export class PortalService {
     })
   }
 
-  private applyNavigatedUrl(url: string): void {
-    if (!isAllowedPortalUrl(url)) {
+  private isNavigationAllowed(url: string): boolean {
+    return isPortalNavigationAllowed(url, this.store.getSettings().trustedSsoDomains)
+  }
+
+  private applyNavigatedUrl(
+    url: string,
+    action: PortalNavigationEvent['action'] = 'navigate'
+  ): void {
+    if (!this.isNavigationAllowed(url)) {
+      this.appendNavigation('blocked', url, false, '导航离开授权域名')
       this.updateState({
         state: 'blocked',
-        error: '已拦截非学习通官方域名的跳转'
+        error: '已拦截非授权域名的跳转'
       })
       return
     }
-    const hostname = new URL(url).hostname.toLocaleLowerCase()
-    const isLoginPage = hostname.startsWith('passport') || /\/login/i.test(url)
-    const loggedIn = isLoginPage ? false : hostname === 'i.chaoxing.com' ? true : null
+    const parsed = new URL(url)
+    const hostname = parsed.hostname.toLocaleLowerCase()
+    const path = parsed.pathname.toLocaleLowerCase()
+    const isLoginPage =
+      hostname.startsWith('passport') ||
+      hostname.startsWith('passport2') ||
+      hostname.includes('login') ||
+      /\/login|\/signin|\/cas\//i.test(path)
+    const loginState: PortalLoginState = isLoginPage
+      ? 'logged_out'
+      : (hostname === 'i.chaoxing.com' &&
+            (path.startsWith('/base') || path.startsWith('/visit'))) ||
+          (this.state.loginState === 'logged_out' && isAllowedPortalUrl(url))
+        ? 'logged_in'
+        : this.state.loginState
+    this.appendNavigation(action, url, true, null)
+    this.currentUrl = url
     this.updateState({
-      url,
+      url: safeDisplayUrl(url),
       displayUrl: safeDisplayUrl(url),
-      loggedIn,
+      loggedIn: loginState === 'logged_in' ? true : loginState === 'logged_out' ? false : null,
+      loginState,
       canGoBack: this.view?.webContents.canGoBack() ?? false,
       canGoForward: this.view?.webContents.canGoForward() ?? false,
       state: this.state.state === 'blocked' ? 'blocked' : this.state.state,
-      error: isLoginPage ? '请在官方登录页手动完成登录，凭据不会写入日志' : null
+      error: isLoginPage ? '请在官方登录页手动完成登录；账号、密码和 Cookie 不会写入日志' : null
     })
+  }
+
+  private appendNavigation(
+    action: PortalNavigationEvent['action'],
+    url: string,
+    allowed: boolean,
+    reason: string | null
+  ): void {
+    const displayUrl = safeDisplayUrl(url)
+    const event: PortalNavigationEvent = {
+      id: randomUUID(),
+      at: new Date().toISOString(),
+      action,
+      url: displayUrl,
+      displayUrl,
+      allowed,
+      reason
+    }
+    this.state = {
+      ...this.state,
+      navigationLog: [event, ...this.state.navigationLog].slice(0, 30)
+    }
   }
 
   private updateState(patch: Partial<PortalState>): void {

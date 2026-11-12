@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { StudyNextStore } from '../../src/main/storage/store'
 
@@ -163,6 +164,61 @@ describe('SQLite 持久化', () => {
     }
   })
 
+  it('从 v2 数据库迁移到 v3，新增任务字段与变更日志且保留旧任务', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'studynext-migrate-'))
+    const file = join(dir, 'studynext.sqlite')
+    const first = new StudyNextStore(file)
+    let taskId = ''
+    try {
+      const task = first.createTask({
+        title: '迁移前任务',
+        description: '',
+        courseId: null,
+        priority: 'medium',
+        kind: 'other',
+        dueAt: dueIn(24),
+        reminderOffsets: [60]
+      })
+      taskId = task.id
+    } finally {
+      first.close()
+    }
+
+    const raw = new DatabaseSync(file)
+    raw.exec('DROP TABLE IF EXISTS task_change_log')
+    for (const column of [
+      'completion_source',
+      'source_updated_at',
+      'manual_fields_json',
+      'field_sources_json'
+    ]) {
+      raw.exec(`ALTER TABLE tasks DROP COLUMN ${column}`)
+    }
+    raw.prepare("UPDATE app_meta SET value = '2' WHERE key = 'schema_version'").run()
+    raw.close()
+
+    const migrated = new StudyNextStore(file)
+    try {
+      const columns = (
+        migrated.db.prepare('PRAGMA table_info(tasks)').all() as unknown as Array<{ name: string }>
+      ).map((column) => column.name)
+      expect(columns).toEqual(
+        expect.arrayContaining([
+          'completion_source',
+          'source_updated_at',
+          'manual_fields_json',
+          'field_sources_json'
+        ])
+      )
+      expect(migrated.getTask(taskId)?.title).toBe('迁移前任务')
+      expect(migrated.listTaskHistory(taskId)).toEqual([])
+      expect(migrated.getMeta('schema_version')).toBe('3')
+    } finally {
+      migrated.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('一键恢复演示数据会移除手工数据并重建 15 项任务', () => {
     store.createTask({
       title: '将被清理',
@@ -178,5 +234,69 @@ describe('SQLite 持久化', () => {
     expect(store.listCourses()).toHaveLength(5)
     expect(store.listTasks()).toHaveLength(15)
     expect(store.listTasks().some((task) => task.title === '将被清理')).toBe(false)
+  })
+
+  it('增量导入按外部 ID 更新，保留手动字段并记录截止变化', () => {
+    const first = store.upsertImportedTask(
+      {
+        title: '平台作业',
+        description: '第一版',
+        courseId: null,
+        priority: 'medium',
+        kind: 'homework',
+        dueAt: dueIn(24),
+        reminderOffsets: [60]
+      },
+      { externalId: 'homework-1', source: 'import' }
+    )
+    expect(first.action).toBe('created')
+
+    const edited = store.updateTask(first.task.id, {
+      title: '我改过的标题',
+      description: first.task.description,
+      courseId: first.task.courseId,
+      priority: first.task.priority,
+      kind: first.task.kind,
+      dueAt: first.task.dueAt,
+      reminderOffsets: [60]
+    })
+    expect(edited.manualFields).toContain('title')
+
+    const second = store.upsertImportedTask(
+      {
+        title: '平台新标题',
+        description: '第二版说明',
+        courseId: null,
+        priority: 'high',
+        kind: 'homework',
+        dueAt: dueIn(72),
+        reminderOffsets: [60]
+      },
+      { externalId: 'homework-1', source: 'import', sourceUpdatedAt: dueIn(1) }
+    )
+    expect(second.action).toBe('updated')
+    expect(second.task.title).toBe('我改过的标题')
+    expect(second.task.description).toBe('第二版说明')
+    expect(second.conflicts).toContain('title')
+    expect(second.deadlineChanged).toBe(true)
+    expect(store.listTaskHistory(first.task.id).length).toBeGreaterThan(1)
+
+    store.setTaskCompleted(first.task.id, true)
+    const third = store.upsertImportedTask(
+      {
+        title: '平台新标题',
+        description: '第二版说明',
+        courseId: null,
+        priority: 'high',
+        kind: 'homework',
+        dueAt: dueIn(72),
+        reminderOffsets: [60],
+        status: 'todo'
+      },
+      { externalId: 'homework-1', source: 'import' }
+    )
+    expect(third.task.status).toBe('done')
+    expect(third.task.completionSource).toBe('local')
+    expect(third.conflicts).toContain('status')
   })
 })

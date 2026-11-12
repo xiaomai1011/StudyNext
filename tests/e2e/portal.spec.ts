@@ -73,7 +73,7 @@ async function launch(): Promise<void> {
 
 test.beforeAll(async () => {
   const port = await createProbeServer()
-  portalUrl = `https://${PORTAL_HOST}:${port}/probe`
+  portalUrl = `https://${PORTAL_HOST}:${port}/probe?token=e2e-secret#section`
   await launch()
 })
 
@@ -155,6 +155,15 @@ test('第三方网页运行在隔离 WebContentsView 中且无法访问 Electron
     electronType: 'undefined',
     ipcRendererType: 'undefined'
   })
+
+  const exposedState = await page.evaluate(async (): Promise<PortalState> => {
+    const api = (window as unknown as { studynext: StudyNextApi }).studynext
+    return api.portal.state()
+  })
+  const expectedDisplayUrl = new URL(portalUrl)
+  expect(exposedState.url).toBe(`${expectedDisplayUrl.origin}${expectedDisplayUrl.pathname}`)
+  expect(exposedState.url).not.toContain('token')
+  expect(JSON.stringify(exposedState.navigationLog)).not.toContain('token')
 
   await app.evaluate(async ({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0]

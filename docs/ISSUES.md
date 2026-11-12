@@ -1,7 +1,8 @@
 # StudyNext 开发问题记录与开源项目审查说明
 
-记录日期：2026-11-11  
-对应版本：StudyNext 0.2.0
+记录日期：2026-11-11（2026-11-12 补充 v0.3）
+
+对应版本：StudyNext 0.3.0
 
 这份文档回答两个问题：
 
@@ -20,7 +21,7 @@
 | [mshzy/study_assistant](https://github.com/mshzy/study_assistant)                                           | 仓库主页、README、MIT LICENSE、根目录；确认主代码在 `local_app`，是 Flutter 本地应用，README 说明登录、作业同步、提醒和桌面小组件都在该目录                                                                                                | 没有逐文件阅读 Dart/Flutter 实现；没有把它的同步逻辑移植到 Electron；没有运行 Flutter 应用                    | 只参考“课程与任务分离、提醒预设、同步失败要显式呈现”的产品划分；数据模型和 UI 为独立实现                         |
 | [helloene/chaoxing-xuexitong-student-portal](https://github.com/helloene/chaoxing-xuexitong-student-portal) | 仓库主页、README、MIT LICENSE、文件列表；确认是 14 个入口的纯静态 PWA 导航页，包含 `index.html`、`script.js`、`styles.css`、`sw.js` 等                                                                                                     | 没有复制它的 HTML/CSS/JS，也没有照搬它的视觉设计；没有把它当作数据接口                                        | 只把官方入口 URL 作为事实性配置参考；本项目入口由 `BUILTIN_ENTRIES` 独立维护                                     |
 | [unraous/uxuescript](https://github.com/unraous/uxuescript)                                                 | 仓库主页、README、GPL-3.0 LICENSE、目录结构；确认是基于 Rust + Tauri 2 + Vue 3 的自动刷课/AI 答题客户端，包含 `injected/` 课程脚本、`src-tauri/`、AI 答题和考试辅助说明                                                                    | 没有阅读或复制 `injected/chaoxing/course.js` 的自动化实现；没有复用其字体还原、题目提取或答题逻辑；没有运行它 | 功能方向明确排除；只把“桌面端 + 内嵌 WebView + 本地模型配置”的产品形态作为反面边界参考。GPL-3.0 代码未进入本项目 |
-| `xuexitong-cli`（分享会话中提到，不是原始四个仓库之一）                                                     | 只看到分享会话中的功能描述：MIT、只读数据函数如 `list_courses`、`list_chapters`、`list_homework`、`get_homework_deadlines`、`list_exams`、`list_notices`、`get_schedule`                                                                   | 没有 clone 该仓库，也没有逐文件核对其实现；没有把它的接口调用、登录流程或代码复制进 StudyNext                 | 作为后续“授权只读数据适配器”的概念参考；当前实时适配器仍是 `not_configured`，没有声称已接入                      |
+| `xuexitong-cli`（分享会话中提到，不是原始四个仓库之一）                                                     | 已 clone 到 `.tmp-research/xuexitong-cli`，确认 MIT LICENSE、commit `74b843ad4a3439a6ee5ba33f6a3288d9be6ed990`；阅读 README 与 `xuexitong_mcp/client.py`，核对 16 个只读工具、登录 Cookie 依赖和课程/作业/考试/通知/课表接口               | 没有逐行阅读全部 Python 代码；没有运行它的登录流程；没有把接口调用、密码处理或代码复制进 StudyNext            | 作为后续“授权只读数据适配器”的概念参考；当前实时适配器仍是 `not_configured`，没有声称已接入                      |
 
 ### 1.1 为什么没有把四个仓库全部逐行读完
 
@@ -28,16 +29,17 @@
 - `uxuescript` 明确是自动刷课/AI 代答工具，功能方向与当前产品边界冲突，且为 GPL-3.0；只做许可与能力层面的排除记录，不进入实现。
 - 静态门户项目只需要确认入口清单和“官方页面承载”的产品思路，代码量不大但没有复制价值。
 - 真正需要严谨对待的是许可证和数据来源，所以在 `docs/research.md` 记录了来源、许可证和复用结论，并在本项目内独立实现。
+- `xuexitong-cli` 在后续 v0.3 调研中做了 clone 和只读代码审查，但只看了 README 与协议层 `client.py`，没有逐行读全部项目，也没有复制代码。
 
 ### 1.2 许可证记录
 
-| 项目                                       | 许可证            | 是否复制代码 |
-| ------------------------------------------ | ----------------- | ------------ |
-| Cooanyh/chaoxing-list                      | AGPL-3.0          | 否           |
-| mshzy/study_assistant                      | MIT               | 否           |
-| helloene/chaoxing-xuexitong-student-portal | MIT               | 否           |
-| unraous/uxuescript                         | GPL-3.0           | 否           |
-| xuexitong-cli                              | MIT（仅会话描述） | 否           |
+| 项目                                       | 许可证   | 是否复制代码 |
+| ------------------------------------------ | -------- | ------------ |
+| Cooanyh/chaoxing-list                      | AGPL-3.0 | 否           |
+| mshzy/study_assistant                      | MIT      | 否           |
+| helloene/chaoxing-xuexitong-student-portal | MIT      | 否           |
+| unraous/uxuescript                         | GPL-3.0  | 否           |
+| xuexitong-cli                              | MIT      | 否           |
 
 ## 2. 实际遇到的问题
 
@@ -50,19 +52,19 @@
 - 处理：执行 `node node_modules/electron/install.js` 补下载二进制；正式项目保留正常的 `postinstall` 安装方式。
 - 影响：只影响当前自动化宿主，不影响源码逻辑。
 
-#### P2. Electron 45 在当前宿主启动即崩溃
+#### P2. Electron 45 在当前宿主启动即崩溃（已复核并升级）
 
-- 现象：Electron 45.3.0 在业务代码加载前崩溃，退出码 `0xc0000005`，崩溃偏移约 `0x7e7090b`；最小复现脚本同样复现。
-- 排查：确认崩溃发生在 `app.whenReady()` 之前；改用显式已存在、可写的 `--user-data-dir` 后可启动，说明宿主默认 profile/目录权限是触发因素之一，而不是 React 或 SQLite 代码。
-- 处理：降到同宿主验证稳定的 Electron 38.8.6；同时增加数据目录候选和 `STUDYNEXT_DATA_DIR` 覆盖。
-- 仍未完全消除的限制：干净 Windows 10/11 机器上仍建议复测 Electron 45；当前交付以 38.8.6 为准。
+- 现象：最初 Electron 45.3.0 在业务代码加载前崩溃，退出码 `0xc0000005`，崩溃偏移约 `0x7e7090b`；最小复现脚本同样复现。
+- 排查：确认崩溃发生在 `app.whenReady()` 之前；改用显式已存在、可写且有权限的 `--user-data-dir` 后可以启动，说明默认 profile/目录权限是触发因素之一，而不是 React 或 SQLite 代码。
+- 处理：先用 38.8.6 继续开发；v0.3 重新用 Electron 45.3.0 做启动探针、完整 E2E、生产构建和打包版验证，均通过，因此升级到 45.3.0。
+- 经验：不能把“默认 profile 下崩溃”直接归因为 Electron 版本；必须用显式 user-data-dir 做隔离复现。自动化环境仍需 `STUDYNEXT_DATA_DIR` 与 `--user-data-dir`。
 
-#### P3. 默认 AppData 目录创建失败
+#### P3. 默认 AppData 目录创建失败（v0.3 已移除 temp 回退）
 
 - 现象：`EPERM: operation not permitted, mkdir 'C:\Users\...\AppData\Roaming\StudyNext'`。
 - 原因：当前自动化宿主对 Electron 子进程写入 AppData/Temp 有限制；系统 Node 可以写，但 Electron 子进程被策略拦截。
-- 处理：`resolveUserDataPath()` 依次尝试 `%LOCALAPPDATA%\StudyNext`、`%APPDATA%\StudyNext`、系统临时目录 `StudyNext`；仍失败时提示设置 `STUDYNEXT_DATA_DIR`。
-- 测试处理：E2E 使用工作区下 `.tmp-e2e-*` 作为数据目录，避免读写真实用户数据。
+- 处理：`resolveUserDataPath()` 只尝试 `%LOCALAPPDATA%\StudyNext` 和应用数据目录；`STUDYNEXT_DATA_DIR` 可覆盖。所有候选不可写时显示“无法创建本地数据目录”并退出，**不再回退系统临时目录**，避免重启后误以为数据丢失。
+- 测试处理：E2E 使用工作区下 `.tmp-*` 作为数据目录，避免读写真实用户数据。
 
 #### P4. `ELECTRON_RUN_AS_NODE=1` 导致 GUI 启动异常
 
@@ -240,18 +242,51 @@ Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
 - 处理：改为 91，并明确统计口径；新增 ISSUES.md 后同步把它列入文档清单。
 - 教训：文件数不是核心指标，但既然写进交付报告，就必须可复现；以后用一条 PowerShell 命令重新生成，不凭记忆填写。
 
+### 2.7 v0.3 真实接入与可靠性迭代新增问题
+
+#### P32. 数据目录静默回退临时目录
+
+- 现象：旧实现三级候选最后落到系统临时目录，用户重启后可能发现课程和任务“消失”。
+- 处理：新增 `user-data.ts`，只允许 LOCALAPPDATA、应用数据目录和显式 `STUDYNEXT_DATA_DIR`；全部不可写时启动错误框并退出，测试覆盖候选顺序与不可写路径。
+
+#### P33. 任务增量导入覆盖手动修改
+
+- 现象：按外部 ID 更新任务时，如果直接 UPDATE 所有字段，会覆盖用户在本地改过的标题或截止时间。
+- 处理：新增 `manualFields`/`fieldSources`/`completionSource`/`task_change_log`；`upsertImportedTask` 逐字段合并，保留手动字段并返回 `conflicts`，平台完成不覆盖本地完成。
+
+#### P34. Portal 导航日志泄露查询参数
+
+- 现象：直接保存页面 URL 会把 `?token=...` 或会话片段写进诊断日志。
+- 处理：所有 state 与导航日志只保存 `origin + pathname`，URL 带 token 的 E2E 断言已验证；导航日志最多 30 条，清空按钮可用。
+
+#### P35. 登录状态误判
+
+- 现象：旧逻辑仅凭 `passport` 或 `/login` 判断未登录，i.chaoxing.com 一律已登录，无法区分登录页和普通官方页。
+- 处理：改为 `unknown/logged_out/logged_in` 三态启发式；passport/login/cas 为登出，`i.chaoxing.com/base` 或 `/visit` 或从登出返回官方域为登录；文档明确这不是 token 校验。
+
+#### P36. 校园 SSO 与官方白名单边界
+
+- 现象：只允许学习通域名会把学校统一认证页拦截，用户无法完成部分学校登录。
+- 处理：设置增加 `trustedSsoDomains`，只接受 HTTPS、443、无 userinfo 的精确域名或子域，最多 20 个；官方入口仍只允许学习通 HTTPS 域名。导航仍由用户手动完成，不注入脚本。
+
+#### P37. Electron 版本与数据目录耦合
+
+- 现象：旧版本 38.8.6 已过期，而 Electron 45 在默认 profile 下的崩溃与 user-data-dir 权限相关。
+- 处理：升级到 45.3.0；用隔离 `--user-data-dir` 重新跑 E2E、构建和打包验证，确认不是业务代码问题。
+
 ## 3. 仍然存在的限制
 
 这些不是“已经解决”的问题，而是当前版本的真实边界：
 
 1. **实时学习通接入未配置**：没有找到面向个人开发者公开可申请的 OAuth/课程接口文档；`ChaoxingAuthorizedAdapter.isConfigured()` 仍固定返回 `false`，UI 显示未配置，不以演示数据或快照冒充实时同步。
-2. **快照是手动导入**：没有定时拉取、增量同步和冲突合并；重复导入已有任务时当前会跳过，不会自动更新已存在任务的截止时间。
-3. **退出后没有定时提醒**：主进程退出后定时器停止；重新启动会补发最近 10 分钟内错过的提醒。界面已明确说明，不声称后台常驻。
-4. **AI 真实调用取决于用户配置**：无内置共享 Key；自动化测试只覆盖 URL 校验、消息构造和响应解析。
+2. **快照是手动导入**：没有定时拉取或自动更新；同一快照重复导入已支持按外部 ID 增量更新、截止时间变化检测、手动字段冲突保留，但不主动访问学习通。
+3. **退出后没有定时提醒**：主进程退出后定时器停止；重新启动会补发最近 10 分钟内错过的提醒。界面已明确说明，不声称后台常驻；`NotificationScheduler` 已抽象，Windows 计划任务仍是后续工作。
+4. **AI 真实调用取决于用户配置**：无内置共享 Key；自动化测试只覆盖 URL 校验、消息构造和响应解析；没有 OCR、截图搜题或自动提交。
 5. **安装包未代码签名**：Windows 可能显示未知发布者；这不影响本地安装，但发布前需要证书。
-6. **Electron 版本受宿主影响**：当前用 38.8.6 交付；Electron 45 在该自动化宿主默认 profile 下崩溃，建议在干净 Windows 虚拟机复测后再升级。
+6. **Electron 45 已在当前宿主验证**：E2E、生产构建、打包版均通过；干净 Windows 虚拟机仍需做发布前回归。
 7. **没有实现自动刷课、签到、考试代答、验证码绕过、反爬或监考绕过**：这是产品边界，不是未完成 bug。
 8. **没有逐行审阅四个开源仓库的全部源码**：如第 1 节所述，只做了仓库级/README/许可证/目录级调研；本项目没有复制任何第三方代码。
+9. **真实账号登录未验证**：只验证了官方页面隔离、白名单、脱敏日志和本地 HTTPS 测试证书；没有使用真实学习通账号，也不收集密码、Cookie 或 Token。
 
 ## 4. 复现验证
 
@@ -268,11 +303,11 @@ npm run build:win
 当前结果：
 
 - `npm run typecheck`：通过
-- `npm test`：8 个文件、40/40 通过
-- `npm run test:e2e`：5/5 通过
+- `npm test`：9 个文件、47/47 通过
+- `npm run test:e2e`：5 个规格文件、6/6 通过
 - `npm run build`：通过
-- `npm run build:win`：通过，产物为 `release/StudyNext-Setup-0.2.0.exe`
-- 打包版启动：`title=学习总览`、`version=0.2.0`、`packaged=true`
+- `npm run build:win`：通过，产物为 `release/StudyNext-Setup-0.3.0.exe`
+- 打包版启动：`title=学习总览`、`version=0.3.0`、`packaged=true`
 
 ## 5. 相关文档
 

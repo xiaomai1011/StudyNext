@@ -1,7 +1,7 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Bell, BookOpen, CalendarClock, CheckCircle2, Circle, Pencil, Trash2 } from 'lucide-react'
-import type { Course, Task } from '@shared/types'
-import { formatRemainingCompact } from '@shared/domain'
+import type { Course, Task, TaskChange } from '@shared/types'
+import { dueBucket, formatRemainingCompact } from '@shared/domain'
 import { Modal } from './Modal'
 import {
   BUCKET_LABEL,
@@ -22,8 +22,25 @@ interface TaskDetailProps {
 
 export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }: TaskDetailProps) {
   const [busy, setBusy] = useState(false)
+  const [history, setHistory] = useState<TaskChange[]>([])
   const done = task.status === 'done'
+  const bucket = dueBucket(task)
   const reminders = task.reminders.filter((rule) => rule.enabled)
+
+  useEffect(() => {
+    let active = true
+    void window.studynext.tasks
+      .history(task.id)
+      .then((rows) => {
+        if (active) setHistory(rows)
+      })
+      .catch(() => {
+        if (active) setHistory([])
+      })
+    return () => {
+      active = false
+    }
+  }, [task.id, task.updatedAt])
 
   const toggle = async (): Promise<void> => {
     setBusy(true)
@@ -64,9 +81,9 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
         <div className="detail-title">{task.title}</div>
         <div className="detail-meta">
           <span
-            className={`due-pill ${task.status !== 'done' && new Date(task.dueAt) < new Date() ? 'overdue' : ''}`}
+            className={`due-pill ${bucket === 'overdue' ? 'overdue' : bucket === 'today' ? 'today' : ''}`}
           >
-            {task.status === 'done' ? '已完成' : BUCKET_LABEL.upcoming}
+            {BUCKET_LABEL[bucket]}
           </span>
           <span>{formatRemainingCompact(task.dueAt)}</span>
           <span className="dot-separator" />
@@ -118,11 +135,48 @@ export function TaskDetail({ task, course, onClose, onEdit, onDelete, onToggle }
               : task.source === 'manual'
                 ? '手动创建'
                 : task.source === 'import'
-                  ? 'CSV / ICS 导入'
-                  : '学习通适配器'}
+                  ? '本地学习快照'
+                  : '学习通授权适配器'}
+          </div>
+        </div>
+        <div className="detail-item">
+          <div className="detail-item-label">完成方式</div>
+          <div className="detail-item-value">
+            {task.status !== 'done'
+              ? '尚未完成'
+              : task.completionSource === 'local'
+                ? '本地手动标记'
+                : task.completionSource === 'platform'
+                  ? '平台返回已完成'
+                  : '未标注'}
           </div>
         </div>
       </div>
+
+      {task.manualFields.length > 0 || task.externalId ? (
+        <div className="mini-empty" style={{ marginTop: 12, lineHeight: 1.7 }}>
+          {task.externalId ? (
+            <div>
+              外部标识：<code>{task.externalId}</code>
+            </div>
+          ) : null}
+          {task.manualFields.length > 0 ? (
+            <div>已保留 {task.manualFields.length} 个本地修改字段；后续导入不会覆盖这些字段。</div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {history.length > 0 ? (
+        <div className="task-history">
+          <div className="task-history-title">最近变更</div>
+          {history.slice(0, 4).map((change) => (
+            <div className="task-history-row" key={change.id}>
+              <span>{formatDateTime(change.changedAt)}</span>
+              <span>{change.summary}</span>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </Modal>
   )
 }

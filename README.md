@@ -2,7 +2,7 @@
 
 StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。它把课程、任务、DDL、日历和官方网页入口放进一个本地优先的桌面应用，重点解决网页版信息分散、截止时间不集中、提醒不可控的问题。
 
-> 当前版本是 **0.2.0（桌面客户端 + 学习中心 + 题目助手）**。课程、任务、章节进度、题库、通知与演示数据都保存在本机；没有配置学习通授权数据源时，应用会明确显示“未配置”，不会伪造同步结果。
+> 当前版本是 **0.3.0（桌面客户端 + 学习中心 + 真实接入边界）**。课程、任务、章节进度、题库、通知与演示数据都保存在本机；没有配置学习通授权数据源时，应用会明确显示“未配置”，不会伪造同步结果。
 
 ![StudyNext 仪表盘](docs/screenshots/dashboard-light.png)
 
@@ -53,7 +53,9 @@ StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。�
 ### 任务中心
 
 - 任务新增、查看、编辑、完成、删除
-- 课程归属、优先级、任务类型、截止时间、备注
+- 任务归属、优先级、类型、截止时间、备注；记录来源字段与手动修改字段
+- 本地完成与平台完成分别标记，后续导入不会覆盖本地完成
+- 变更历史保存在 `task_change_log`，可用于追溯导入、截止变化与手动编辑
 - 按截止时间排序，按课程/状态/优先级筛选
 - DDL 提醒规则编辑：提前 3 天、1 天、3 小时、1 小时及自定义分钟数
 - 逾期、今天、7 天内、之后分组
@@ -64,6 +66,7 @@ StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。�
 - 提醒规则持久化到 SQLite；任务完成、删除或截止时间变更时同步调整
 - 通知投递去重（`notification_deliveries`），同一任务同一提醒不会重复弹出
 - 应用运行期间每 30 秒检查一次；**应用完全退出后不会继续提醒**
+- Windows 系统级计划通知的可行性与限制见 [通知调研](docs/WINDOWS_NOTIFICATIONS.md)；当前版本不把进程内定时器包装成系统计划任务
 - 重新启动时补发最近 10 分钟内错过的提醒（可在设置中关闭）
 - 系统通知不可用时仍会发送应用内提醒事件，不会静默丢失 DDL
 - 启动补发、下一条提醒时间会在设置页和首页同步信息中显示
@@ -85,12 +88,23 @@ StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。�
 - URL 白名单：仅允许 `https://*.chaoxing.com` 与 `https://*.xuexitong.com`
 - 拦截危险跳转、新窗口、webview 挂载、下载与权限请求
 - 登录状态提示、失败提示、在系统浏览器中打开的回退入口
-- 未配置授权数据源时显示 `not_configured`，并保留 CSV/ICS 手动导入
+- 登录状态机区分 `unknown / logged_out / logged_in`；仅在官方页面路径级别判断，不读取密码、不注入登录脚本
+- 可配置校园 SSO 域名白名单；只允许 HTTPS、443、无 userinfo 的精确域名或子域
+- 导航诊断日志最多保留 30 条，只记录去除查询参数与片段后的 URL，不记录 Cookie、Token、账号或密码
+- 未配置授权数据源时显示 `not_configured`，并保留 CSV/ICS/JSON 手动导入
+
+### 真实接入边界
+
+- [学习通接入可行性报告](docs/CHAOXING_INTEGRATION_FEASIBILITY.md)：公开 OAuth 入口、个人开发者限制、`xuexitong-cli` 只读接口审查与未授权风险
+- 当前不调用私有接口、不读取登录凭据、不把打开官方页面描述成同步成功
+- 未来只有取得正式授权后，才实现 `AuthorizedDataAdapter` 的实时数据拉取
 
 ### 数据导入
 
 - JSON 学习快照：导入 `courses/chapters/points/homeworks/exams`，支持根节点或 `data` 包装，按稳定外部 ID 去重
 - 快照课程、章节、学习点和作业以 `import` 来源保存；同步状态明确显示“本地快照”，不会伪装成学习通实时授权同步
+- 同一外部 ID 重复导入会更新任务；截止时间变化会清理旧通知投递，并记录 `deadlineChanges`
+- 手动修改过的字段记录在 `manualFields`，后续导入保留本地修改并返回 `conflicts`；本地完成状态不会被平台返回覆盖
 - CSV：支持中英文字段别名，字段至少包含标题、截止时间；可选课程、优先级、类型、提醒
 - ICS：解析 VEVENT、DATE/DATE-TIME、UTC `Z`、`TZID`、DESCRIPTION、CATEGORIES
 - 导入按外部 UID/去重键避免重复任务；导入结果区分成功、部分成功和失败
@@ -108,17 +122,17 @@ StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。�
 
 ## 技术栈
 
-| 层     | 技术                                       | 选择原因                                                                                                          |
-| ------ | ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
-| 桌面壳 | Electron 38.8.6                            | Windows 稳定、支持 `WebContentsView` 与 Node 内置 SQLite；Electron 45 在当前测试环境启动阶段崩溃，已回退到 38.8.6 |
-| 构建   | electron-vite 6 + Vite 8                   | 主进程/预加载/渲染器统一构建，开发热更新                                                                          |
-| UI     | React 19 + TypeScript 5.9 + Tailwind CSS 4 | 严格类型、组件化、快速迭代                                                                                        |
-| 数据   | Node `node:sqlite`（`DatabaseSync`）       | 免原生模块 ABI 编译，打包简单，适合本地单用户数据库                                                               |
-| 校验   | Zod 4                                      | IPC 边界运行时校验                                                                                                |
-| AI     | OpenAI 兼容 HTTP API + safeStorage         | 用户自带 Key，支持自定义 Base URL/模型；Key 加密存储，不内置任何服务商凭据                                        |
-| 日期   | date-fns 4 + date-fns-tz 3                 | 本地时区、日历运算、ICS TZID                                                                                      |
-| 测试   | Vitest 5 + Playwright 1.65                 | 领域/存储/调度单测 + 真实 Electron E2E                                                                            |
-| 打包   | electron-builder 26                        | NSIS Windows 安装包                                                                                               |
+| 层     | 技术                                       | 选择原因                                                                                        |
+| ------ | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
+| 桌面壳 | Electron 45.3.0                            | Windows 稳定、支持 `WebContentsView` 与 Node 内置 SQLite；0.3.0 已在真实 E2E 中验证 Electron 45 |
+| 构建   | electron-vite 6 + Vite 8                   | 主进程/预加载/渲染器统一构建，开发热更新                                                        |
+| UI     | React 19 + TypeScript 5.9 + Tailwind CSS 4 | 严格类型、组件化、快速迭代                                                                      |
+| 数据   | Node `node:sqlite`（`DatabaseSync`）       | 免原生模块 ABI 编译，打包简单，适合本地单用户数据库                                             |
+| 校验   | Zod 4                                      | IPC 边界运行时校验                                                                              |
+| AI     | OpenAI 兼容 HTTP API + safeStorage         | 用户自带 Key，支持自定义 Base URL/模型；Key 加密存储，不内置任何服务商凭据                      |
+| 日期   | date-fns 4 + date-fns-tz 3                 | 本地时区、日历运算、ICS TZID                                                                    |
+| 测试   | Vitest 5 + Playwright 1.65                 | 领域/存储/调度单测 + 真实 Electron E2E                                                          |
+| 打包   | electron-builder 26                        | NSIS Windows 安装包                                                                             |
 
 ## 快速开始
 
@@ -155,9 +169,9 @@ npm run build:win  # 生成 Windows NSIS 安装包
 
 ### 已生成构建产物
 
-- 安装包：`release/StudyNext-Setup-0.2.0.exe`（106,052,543 bytes，约 101.1 MiB）
+- 安装包：`release/StudyNext-Setup-0.3.0.exe`（125,169,347 bytes，约 119.37 MiB）
 - 免安装目录：`release/win-unpacked/StudyNext.exe`
-- SHA-256：`8C409023E37839F1623414D1D5642ECB64FD7AFD68883C8F92279BC59D2226D7`
+- SHA-256：`FCAFEED57E798D47E94F5ECF3DDC18B46BDD7BA63AD68B07FA25BC1EBE5A54D1`
 
 安装包当前未做代码签名。产物已用真实 Electron 启动验证：打包版可正常加载 asar 内的主进程、preload 与渲染资源。
 
@@ -182,6 +196,10 @@ $env:STUDYNEXT_DATA_DIR = "D:\StudyNextData"
 npm run dev
 ```
 
+数据目录按 Windows 的 `%LOCALAPPDATA%\StudyNext`、应用数据目录依次尝试。
+**不会静默回退到系统临时目录**：所有候选路径均不可写时，应用会显示“无法创建本地数据目录”并退出，
+同时提示设置 `STUDYNEXT_DATA_DIR`。这避免重启后误以为数据丢失。
+
 ### 演示数据
 
 首次启动自动写入 5 门课程、15 项任务、15 个章节与 60 个学习点。设置 → 数据 → “恢复演示数据”可一键重建课程、章节、学习点和任务；题库不会被清空。执行前请确认当前演示数据不再需要。
@@ -201,7 +219,7 @@ npm run dev
 | 第三方页面无 Electron API | 单测校验安全参数；Portal E2E 在真实 WebContentsView 内断言 `require/process/module/window.studynext/ipcRenderer` 均不可见，并验证白名单外跳转被拦截 |
 | 生成 Windows 安装包       | `npm run build:win` 生成 NSIS 安装程序                                                                                                              |
 
-最终自动化结果：Vitest **8 个文件 / 40 项全部通过**；Playwright **5 个规格全部通过**（应用主流程、学习中心/题库/快照导入、Portal 隔离、响应式布局、浅色/深色视图截图）。详细记录见 [测试报告](docs/TEST_REPORT.md)。
+最终自动化结果：Vitest **9 个文件 / 47 项全部通过**；Playwright **5 个规格文件 / 6 项测试全部通过**（应用主流程、学习中心/题库/快照导入与 SSO 设置、Portal 隔离与跳转拦截、响应式布局、浅色/深色视图截图）。详细记录见 [测试报告](docs/TEST_REPORT.md)。
 
 ## 项目结构
 

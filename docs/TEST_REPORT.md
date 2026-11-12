@@ -1,21 +1,21 @@
 # StudyNext 测试报告
 
-- 测试日期：2026-11-11
+- 测试日期：2026-11-12
 - 平台：Windows x64，Node.js v24.19.0，npm 12.0.2
-- Electron：38.8.6（Chromium 140）
+- Electron：45.3.0
 - 测试命令：`npm run typecheck`、`npm test`、`npm run build`、`npm run test:e2e`、`npm run build:win`
 
 ## 1. 结论
 
-| 项目                    | 结果                                                                     |
-| ----------------------- | ------------------------------------------------------------------------ |
-| TypeScript 严格类型检查 | 通过                                                                     |
-| Vitest 单元/集成测试    | **40/40 通过**（8 个文件）                                               |
-| Playwright Electron E2E | **5/5 通过**（应用主流程、学习中心/题库/快照、Portal、响应式、视图截图） |
-| electron-vite 生产构建  | 通过                                                                     |
-| Windows NSIS 安装包     | 通过                                                                     |
-| 打包产物启动验证        | 通过（asar 主进程、preload、renderer 均正常）                            |
-| 已知失败项              | 无                                                                       |
+| 项目                    | 结果                                                                                     |
+| ----------------------- | ---------------------------------------------------------------------------------------- |
+| TypeScript 严格类型检查 | 通过                                                                                     |
+| Vitest 单元/集成测试    | **47/47 通过**（9 个文件）                                                               |
+| Playwright Electron E2E | **6/6 通过**（5 个规格：应用主流程、学习中心/题库/快照与 SSO、Portal、响应式、视图截图） |
+| electron-vite 生产构建  | 通过                                                                                     |
+| Windows NSIS 安装包     | 通过                                                                                     |
+| 打包产物启动验证        | 通过（asar 主进程、preload、renderer 均正常）                                            |
+| 已知失败项              | 无                                                                                       |
 
 ## 2. 单元与集成测试
 
@@ -37,7 +37,7 @@
 - 通知失败释放投递占位，后续 tick 仍可重试。
 - 预设与自定义提醒时长的中文文案。
 
-### 2.3 数据存储（`tests/unit/storage.test.ts`，7 项）
+### 2.3 数据存储（`tests/unit/storage.test.ts`，9 项）
 
 - 首次启动写入 5 门课程、15 项任务、15 个章节与 60 个学习点。
 - 任务新增、读取、修改、完成、删除闭环。
@@ -45,7 +45,9 @@
 - 相同任务、规则、截止时间只投递一次。
 - 课程收藏与设置写入数据库。
 - 关闭并重新打开数据库后数据仍然存在。
+- 从 v2 schema 迁移到 v3：补齐任务字段与变更日志，保留旧任务。
 - 一键恢复演示数据会清理手工数据并重建种子。
+- 增量导入按外部 ID 更新，截止变化计数，手动字段冲突保留且本地完成不被覆盖。
 
 ### 2.4 导入（`tests/unit/import.test.ts`，5 项）
 
@@ -55,9 +57,10 @@
 - ICS 的 TZID、全天事件与折叠行解析。
 - 导入失败返回 failure，不虚报成功。
 
-### 2.5 安全与同步（`tests/unit/security.test.ts`，5 项）
+### 2.5 安全与同步（`tests/unit/security.test.ts`，6 项）
 
 - 仅允许学习通官方域名及其子域的 HTTPS 页面。
+- 拒绝带 userinfo 的官方 URL，避免用户名/密码样式地址绕过。
 - 网页视图关闭 Node、开启沙箱、使用独立持久化会话。
 - 展示 URL 去除 query 与 hash，避免泄露令牌。
 - 未配置授权适配器时固定返回 `not_configured`。
@@ -83,6 +86,13 @@
 - 提示词包含题目与上下文，但不包含 API Key。
 - 解析 OpenAI 兼容响应的正文、模型和错误结构。
 
+### 2.9 数据目录解析（`tests/unit/user-data.test.ts`，4 项）
+
+- Windows 候选顺序为 `LOCALAPPDATA\StudyNext`、应用数据目录。
+- `STUDYNEXT_DATA_DIR` 覆盖候选且不读取其他路径。
+- 返回第一个可创建目录；文件占用路径会抛出明确错误。
+- 候选路径中绝不回退到系统临时目录。
+
 ## 3. Electron E2E
 
 ### 3.1 应用主流程（`tests/e2e/app.spec.ts`）
@@ -101,6 +111,7 @@
 - 新建题目卡并使用搜索/课程筛选。
 - 通过文件选择导入 JSON 学习快照，断言导入统计、课程/章节/学习点可见。
 - 标题栏显示“本地快照 · 非实时同步”，不会冒充学习通实时数据。
+- 校园 SSO 域名设置保存后重载仍然保留，空值/非法域名由 Zod 校验拒绝。
 
 ### 3.3 Portal 隔离（`tests/e2e/portal.spec.ts`）
 
@@ -109,6 +120,7 @@
 - 页面标题正确加载为 `Portal Isolation Probe`。
 - 页面上下文中 `require`、`process`、`module`、`window.studynext`、`window.electron`、`window.ipcRenderer` 全部为 `undefined`。
 - 执行跳转到 `https://example.com/blocked` 后，Portal 状态变为 `blocked`，视图 URL 没有离开学习通白名单。
+- 入口 URL 带 `?token=e2e-secret#section` 时，对外 state 与导航日志均不含 token；导航日志只保留脱敏 URL 与拦截原因。
 
 ### 3.4 响应式（`tests/e2e/responsive.spec.ts`）
 
@@ -133,9 +145,9 @@
 ## 4. 构建与打包
 
 - `npm run build`：主进程、preload、renderer 三端构建通过。
-- `npm run build:win`：生成 `release/StudyNext-Setup-0.2.0.exe`（106,052,543 bytes，约 101.1 MiB）。
-- SHA-256：`8C409023E37839F1623414D1D5642ECB64FD7AFD68883C8F92279BC59D2226D7`。
-- `scripts/verify-packaged.cjs`：以 Playwright 启动 `release/win-unpacked/StudyNext.exe`，断言窗口标题 `学习总览`、版本 `0.2.0` 与 `packaged: true`。
+- `npm run build:win`：生成 `release/StudyNext-Setup-0.3.0.exe`（125,169,347 bytes，约 119.37 MiB）。
+- SHA-256：`FCAFEED57E798D47E94F5ECF3DDC18B46BDD7BA63AD68B07FA25BC1EBE5A54D1`。
+- `scripts/verify-packaged.cjs`：以 Playwright 启动 `release/win-unpacked/StudyNext.exe`，断言窗口标题 `学习总览`、版本 `0.3.0` 与 `packaged: true`。
 - 安装包未代码签名。
 
 ## 5. 测试环境说明
