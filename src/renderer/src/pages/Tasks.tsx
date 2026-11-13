@@ -27,7 +27,7 @@ interface TasksProps {
 }
 
 const PRIORITY_WEIGHT: Record<TaskPriority, number> = { high: 0, medium: 1, low: 2 }
-const BUCKET_ORDER = ['overdue', 'today', 'soon', 'upcoming', 'done'] as const
+const BUCKET_ORDER = ['today', 'soon', 'upcoming', 'overdue', 'done'] as const
 
 export function Tasks({
   tasks,
