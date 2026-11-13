@@ -61,17 +61,17 @@ test('课程卡片、详情与课表视图可用', async () => {
   await page.screenshot({ path: join(ROOT, 'test-results', 'chaoxing-calendar.png') })
 })
 
-test('任务计数区分同步总数、显示数与隐藏逾期数', async () => {
+test('任务计数区分同步总数、显示数与逾期数', async () => {
   await open('任务中心', '任务与 DDL')
-  const subtitle = page.locator('.page-subtitle').filter({ hasText: '隐藏逾期' })
-  const readCounts = async (): Promise<{ total: number; visible: number; hidden: number }> => {
+  const subtitle = page.locator('.page-subtitle').filter({ hasText: '其中逾期' })
+  const readCounts = async (): Promise<{ total: number; visible: number; overdue: number }> => {
     const text = await subtitle.innerText()
-    const match = text.match(/同步 (\d+) 项 · 实际显示 (\d+) 项 · 隐藏逾期 (\d+) 项/)
+    const match = text.match(/同步 (\d+) 项 · 显示 (\d+) 项 · 其中逾期 (\d+) 项/)
     if (!match) throw new Error(`无法解析任务计数：${text}`)
-    return { total: Number(match[1]), visible: Number(match[2]), hidden: Number(match[3]) }
+    return { total: Number(match[1]), visible: Number(match[2]), overdue: Number(match[3]) }
   }
   const before = await readCounts()
-  expect(before.total).toBe(before.visible + before.hidden)
+  expect(before.total).toBe(before.visible)
   expect(before.visible).toBeGreaterThan(0)
 
   await page.getByRole('button', { name: '新建任务' }).click()
@@ -84,9 +84,9 @@ test('任务计数区分同步总数、显示数与隐藏逾期数', async () =>
     .poll(async () => (await readCounts()).total)
     .toBe(before.total + 1)
   const after = await readCounts()
-  expect(after.hidden).toBe(before.hidden + 1)
-  expect(after.visible).toBe(before.visible)
-  await expect(page.locator('.task-row').filter({ hasText: 'E2E 逾期任务' })).toHaveCount(0)
+  expect(after.visible).toBe(before.visible + 1)
+  expect(after.overdue).toBe(before.overdue + 1)
+  await expect(page.locator('.task-row').filter({ hasText: 'E2E 逾期任务' })).toHaveCount(1)
 })
 
 test('设置页密码显示切换可用', async () => {

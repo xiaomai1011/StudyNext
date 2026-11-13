@@ -27,7 +27,7 @@ interface TasksProps {
 }
 
 const PRIORITY_WEIGHT: Record<TaskPriority, number> = { high: 0, medium: 1, low: 2 }
-const BUCKET_ORDER = ['today', 'soon', 'upcoming', 'done'] as const
+const BUCKET_ORDER = ['overdue', 'today', 'soon', 'upcoming', 'done'] as const
 
 export function Tasks({
   tasks,
@@ -45,11 +45,8 @@ export function Tasks({
   const [sortMode, setSortMode] = useState<SortMode>('due')
 
   const courseById = useMemo(() => new Map(courses.map((course) => [course.id, course])), [courses])
-  // 已逾期的待办不再展示：逾期后继续占用任务列表只会制造噪音。
-  const visibleTasks = useMemo(
-    () => tasks.filter((task) => !(task.status === 'todo' && dueBucket(task, new Date()) === 'overdue')),
-    [tasks]
-  )
+  // 逾期任务继续显示在任务列表；仪表盘与侧栏仍不把它计入“今日/待办”噪音。
+  const visibleTasks = tasks
   const counts = useMemo(
     () => ({
       all: visibleTasks.length,
@@ -58,7 +55,10 @@ export function Tasks({
     }),
     [visibleTasks]
   )
-  const hiddenOverdue = Math.max(0, tasks.length - visibleTasks.length)
+  const overdueCount = useMemo(
+    () => tasks.filter((task) => task.status === 'todo' && dueBucket(task, new Date()) === 'overdue').length,
+    [tasks]
+  )
 
   const filtered = useMemo(() => {
     const scoped = filterTasks(visibleTasks, {
@@ -168,8 +168,7 @@ export function Tasks({
           </div>
           <h1 className="page-title">任务与 DDL</h1>
           <p className="page-subtitle">
-            同步 {tasks.length} 项 · 实际显示 {visibleTasks.length} 项 · 隐藏逾期{' '}
-            {hiddenOverdue} 项。修改截止时间后会自动重排提醒。
+            同步 {tasks.length} 项 · 显示 {visibleTasks.length} 项 · 其中逾期 {overdueCount} 项。修改截止时间后会自动重排提醒。
           </p>
         </div>
         <div className="header-actions">
