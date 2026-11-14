@@ -17,6 +17,7 @@ import type {
   PortalSecurityState,
   PortalState,
   PortalSubmitEvent,
+  PortalUploadEvent,
   QuestionCard,
   QuestionInput,
   QuestionSource,
@@ -146,6 +147,10 @@ const api: StudyNextApi = {
       ipcRenderer.invoke(IPC.portalRevealDownload, id) as Promise<void>,
     cancelDownload: (id: string) =>
       ipcRenderer.invoke(IPC.portalCancelDownload, id) as Promise<void>,
+    retryDownload: (id: string) =>
+      ipcRenderer.invoke(IPC.portalRetryDownload, id) as Promise<void>,
+    deleteDownload: (id: string) =>
+      ipcRenderer.invoke(IPC.portalDeleteDownload, id) as Promise<void>,
     clearDownloads: () => ipcRenderer.invoke(IPC.portalClearDownloads) as Promise<void>,
     downloadDirectory: () =>
       ipcRenderer.invoke(IPC.portalDownloadDirectory) as Promise<string>,
@@ -153,6 +158,8 @@ const api: StudyNextApi = {
       ipcRenderer.invoke(IPC.portalChooseDownloadDirectory) as Promise<string | null>,
     onDownload: (callback: (item: PortalDownload) => void) =>
       subscribe<PortalDownload>(IPC.portalDownloadEvent, callback),
+    onUpload: (callback: (event: PortalUploadEvent) => void) =>
+      subscribe<PortalUploadEvent>(IPC.portalUploadEvent, callback),
     onSubmitDetected: (callback: (event: PortalSubmitEvent) => void) =>
       subscribe<PortalSubmitEvent>(IPC.portalSubmitDetected, callback),
     onState: (callback: (state: PortalState) => void) =>

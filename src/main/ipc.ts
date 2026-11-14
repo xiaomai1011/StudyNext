@@ -379,6 +379,12 @@ export function registerIpc(options: RegisterIpcOptions): void {
   handle(IPC.portalCancelDownload, (_event, id) => {
     portal.cancelDownload(parseInput(z.string().min(1).max(120), id))
   })
+  handle(IPC.portalRetryDownload, (_event, id) => {
+    return portal.retryDownload(parseInput(z.string().min(1).max(120), id))
+  })
+  handle(IPC.portalDeleteDownload, (_event, id) => {
+    portal.deleteDownload(parseInput(z.string().min(1).max(120), id))
+  })
   handle(IPC.portalClearDownloads, () => {
     portal.clearDownloads()
   })

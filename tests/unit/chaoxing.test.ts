@@ -205,6 +205,13 @@ describe('学习通页面解析', () => {
     ])
   })
 
+  it('附件解析保留文件类型对应名称，缺失大小时不伪造', () => {
+    const attachments = parseTaskAttachments(
+      '<iframe class="attach-iframe" objectid="obj-pdf" filename="课程讲义.pdf" filesize=""></iframe>'
+    )
+    expect(attachments).toEqual([{ name: '课程讲义.pdf', size: null, objectId: 'obj-pdf' }])
+  })
+
   it('把无年份截止时间补齐到最接近当前时间的年份', () => {
     const now = new Date('2026-11-12T12:00:00+08:00')
     expect(resolveDeadline('11-27 23:59', now)).toBe('2026-11-27T15:59:00.000Z')
@@ -474,6 +481,33 @@ describe('学习通会话状态机', () => {
       const status = await service.sync()
       expect(status.message).toContain('安全验证')
       expect(status.detail).toContain('9010')
+    } finally {
+      store.close()
+    }
+  })
+
+  it('单课程重试失败时抛出明确错误且不宣称同步成功', async () => {
+    const store = new StudyNextStore(':memory:')
+    try {
+      const { course } = store.upsertProviderCourse(
+        {
+          externalId: '1001:2001',
+          name: '数据结构',
+          teacher: '张老师',
+          schedule: [],
+          sourceUrl: 'https://mooc1.chaoxing.com/visit/stucoursemiddle?courseid=1001&clazzid=2001'
+        },
+        'chaoxing'
+      )
+      const service = new ChaoxingSessionService(
+        store,
+        fakeAdapter({
+          pullCourse: async () => {
+            throw new ChaoxingAccessError('NETWORK', '网络失败')
+          }
+        })
+      )
+      await expect(service.retryCourse(course.id)).rejects.toThrow('课程重试失败')
     } finally {
       store.close()
     }
@@ -863,6 +897,36 @@ describe('学习通课表解析', () => {
       kind: 'link',
       url: 'https://docs.python.org/zh-cn/3.13/py-modindex.html'
     })
+  })
+
+  it('资料分页合并时按 externalId 去重，并对部分页失败保持容错', () => {
+    const pageOne = `
+      <ul class="dataBody_td" type="doc" id="2001" dataname="第一页.doc">
+        <li class="dataBody_size_stu"> 10KB </li>
+      </ul>
+      <ul class="dataBody_td" type="doc" id="2002" dataname="重复条目.pdf">
+        <li class="dataBody_size_stu"> 20KB </li>
+      </ul>
+    `
+    const pageTwo = `
+      <ul class="dataBody_td" type="doc" id="2002" dataname="重复条目.pdf">
+        <li class="dataBody_size_stu"> 20KB </li>
+      </ul>
+      <ul class="dataBody_td" type="pdf" id="2003" dataname="第二页.pdf">
+        <li class="dataBody_size_stu"> 30KB </li>
+      </ul>
+    `
+    const merged = parseMaterialList(pageOne + pageTwo)
+    expect(merged.map((item) => item.externalId)).toEqual([
+      'material:2001',
+      'material:2002',
+      'material:2003'
+    ])
+    expect(merged).toHaveLength(3)
+
+    const truncated = '<ul class="dataBody_td" type="doc" id="2004" dataname="截断'
+    expect(parseMaterialList(pageOne + truncated)).toHaveLength(2)
+    expect(parseMaterialList('')).toEqual([])
   })
 
   it('按周次判断课程是否出现在某一周', () => {

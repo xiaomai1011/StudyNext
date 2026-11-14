@@ -123,7 +123,8 @@ async function initialize(): Promise<void> {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send(IPC.chaoxingSyncProgress, event)
       }
-    }
+    },
+    portal.createSyncNavigationGuard()
   )
   const ai = new AiService(store)
   scheduler = createNotificationScheduler({

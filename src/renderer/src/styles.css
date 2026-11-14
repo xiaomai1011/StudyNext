@@ -3913,6 +3913,74 @@ a {
   position: relative;
 }
 
+.portal-upload-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text-soft);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 10.5px;
+}
+
+.portal-upload-status svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+}
+
+.portal-upload-status.started {
+  position: relative;
+  overflow: hidden;
+}
+
+.portal-upload-status.started svg {
+  color: var(--accent);
+}
+
+.portal-upload-bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 35%;
+  height: 2px;
+  border-radius: 2px;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: portal-upload-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes portal-upload-slide {
+  from {
+    transform: translateX(-110%);
+  }
+  to {
+    transform: translateX(390%);
+  }
+}
+
+.portal-upload-status.completed {
+  border-color: rgba(76, 175, 80, 0.35);
+}
+
+.portal-upload-status.completed svg {
+  color: #6fd17a;
+}
+
+.portal-upload-status.failed {
+  border-color: rgba(255, 99, 99, 0.35);
+}
+
+.portal-upload-status.failed svg {
+  color: #ff7b7b;
+}
+
+.danger-link {
+  color: #ff9a9a;
+}
+
 .portal-downloads {
   border: 1px solid var(--border);
   border-radius: 12px;

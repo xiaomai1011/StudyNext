@@ -25,6 +25,27 @@ describe('SQLite 持久化', () => {
     expect(store.listTasks()).toHaveLength(15)
   })
 
+  it('下载历史可以按单条删除，不影响其他记录', () => {
+    const base = {
+      filename: '资料.pdf',
+      url: 'https://pan-yz.chaoxing.com/file',
+      state: 'completed' as const,
+      receivedBytes: 1024,
+      totalBytes: 1024,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      savePath: 'D:\\Downloads\\StudyNext\\资料.pdf'
+    }
+    store.upsertDownload({ ...base, id: 'download-a' })
+    store.upsertDownload({ ...base, id: 'download-b', filename: '资料-副本.pdf' })
+    expect(store.listDownloads().map((item) => item.id)).toContain('download-a')
+
+    store.deleteDownload('download-a')
+    const remaining = store.listDownloads()
+    expect(remaining.map((item) => item.id)).not.toContain('download-a')
+    expect(remaining.map((item) => item.id)).toContain('download-b')
+  })
+
   it('任务新增、读取、修改、完成与删除形成闭环', () => {
     const created = store.createTask({
       title: '数据库课程设计',

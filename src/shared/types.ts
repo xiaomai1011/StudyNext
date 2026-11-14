@@ -457,6 +457,14 @@ export interface PortalSubmitEvent {
   detectedAt: string
 }
 
+export interface PortalUploadEvent {
+  state: 'started' | 'completed' | 'failed'
+  url: string
+  statusCode: number | null
+  message: string
+  detectedAt: string
+}
+
 export interface PortalSecurityState {  sandbox: boolean
   contextIsolation: boolean
   nodeIntegration: boolean
@@ -558,10 +566,13 @@ export interface StudyNextApi {
     openDownload: (id: string) => Promise<void>
     revealDownload: (id: string) => Promise<void>
     cancelDownload: (id: string) => Promise<void>
+    retryDownload: (id: string) => Promise<void>
+    deleteDownload: (id: string) => Promise<void>
     clearDownloads: () => Promise<void>
     downloadDirectory: () => Promise<string>
     chooseDownloadDirectory: () => Promise<string | null>
     onDownload: (callback: (item: PortalDownload) => void) => () => void
+    onUpload: (callback: (event: PortalUploadEvent) => void) => () => void
     onSubmitDetected: (callback: (event: PortalSubmitEvent) => void) => () => void
     onState: (callback: (state: PortalState) => void) => () => void
   }

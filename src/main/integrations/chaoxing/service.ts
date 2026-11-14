@@ -1,6 +1,8 @@
 import type { ChaoxingSessionStatus, SyncProgressEvent, SyncState } from '@shared/types'
 import { isPlatformTaskDone } from '@shared/domain'
+import { UserFacingError } from '../../lib/errors'
 import type { StudyNextStore } from '../../storage/store'
+import type { SyncNavigationGuard, SyncNavigationResult } from '../../portal/service'
 import {
   ChaoxingAccessError,
   ChaoxingSessionAdapter
@@ -34,7 +36,8 @@ export class ChaoxingSessionService {
     private readonly store: StudyNextStore,
     private readonly adapter: ChaoxingAdapterLike = new ChaoxingSessionAdapter(),
     private readonly onSyncOutcome: (outcome: SessionSyncOutcome) => void = () => undefined,
-    private readonly onProgress: (event: SyncProgressEvent) => void = () => undefined
+    private readonly onProgress: (event: SyncProgressEvent) => void = () => undefined,
+    private readonly navigationGuard?: SyncNavigationGuard
   ) {
     this.status = this.readStatus()
     this.adapter.onProgress = onProgress
@@ -120,7 +123,9 @@ export class ChaoxingSessionService {
     }
     this.persist()
     this.onProgress({ phase: 'start', message: '正在通过 Web Session 读取学习通数据…', current: 0, total: 0 })
+    let navigationResult: SyncNavigationResult | null = null
     try {
+      await this.navigationGuard?.begin()
       const result = await this.adapter.pull()
       this.lastPullAt = Date.now()
       const counts = this.persistResult(result)
@@ -177,7 +182,18 @@ export class ChaoxingSessionService {
         lastSuccessAt: this.status.lastSyncAt
       })
     } finally {
+      try {
+        navigationResult = (await this.navigationGuard?.end()) ?? null
+      } catch {
+        navigationResult = { restored: false, message: '同步完成，但原页面恢复失败' }
+      }
       this.syncing = false
+      if (navigationResult?.message) {
+        this.status = {
+          ...this.status,
+          detail: appendDetail(this.status.detail, navigationResult.message)
+        }
+      }
       this.persist()
     }
     return this.getStatus()
@@ -205,7 +221,9 @@ export class ChaoxingSessionService {
     }
     this.persist()
     this.onProgress({ phase: 'start', message: this.status.message, current: 0, total: 0 })
+    let navigationResult: SyncNavigationResult | null = null
     try {
+      await this.navigationGuard?.begin()
       const result = await this.adapter.pullCourse(course.externalId)
       const counts = this.persistResult(result)
       const materialCount = (result.materials ?? []).reduce((sum, group) => sum + group.items.length, 0)
@@ -246,8 +264,20 @@ export class ChaoxingSessionService {
         detail: this.status.detail,
         lastSuccessAt: this.status.lastSyncAt
       })
+      throw new UserFacingError('CHAOXING_RETRY_FAILED', this.status.message)
     } finally {
+      try {
+        navigationResult = (await this.navigationGuard?.end()) ?? null
+      } catch {
+        navigationResult = { restored: false, message: '同步完成，但原页面恢复失败' }
+      }
       this.syncing = false
+      if (navigationResult?.message) {
+        this.status = {
+          ...this.status,
+          detail: appendDetail(this.status.detail, navigationResult.message)
+        }
+      }
       this.persist()
     }
     return this.getStatus()
@@ -491,4 +521,8 @@ function buildDetail(result: ChaoxingPullResult): string | null {
   if (result.errors.length > 0) parts.push(`失败：${result.errors.slice(0, 5).join('；')}`)
   if (result.warnings.length > 0) parts.push(`提示：${result.warnings.slice(0, 5).join('；')}`)
   return parts.length > 0 ? parts.join('。') : null
+}
+
+function appendDetail(detail: string | null, message: string): string {
+  return detail ? `${detail}；${message}` : message
 }

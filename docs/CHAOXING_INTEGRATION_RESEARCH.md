@@ -242,10 +242,12 @@ StudyNext 当前已经具备：
 2. 考试列表（`mooc1-api.chaoxing.com/exam-ans/exam/test/examcode/examlist`）。
 3. 章节目录与学习点（`mooc2-ans.chaoxing.com/mooc2-ans/mycourse/studentcourse`，Portal 点击“章节”后读取）。
 4. 通知（`notice.chaoxing.com/pc/notice/getNoticeList`）。
-5. 资料列表与下载（`.../coursedata/stu-datalist`、`coursedata/downloadData`；主进程复用 Portal 会话流式下载到 `Downloads\StudyNext`，支持进度、取消、打开、定位）。
-6. 内嵌官方作业页（隔离 `WebContentsView`）：用户本人编辑、上传附件、暂时保存、确认后提交；应用不代填、不代提交。
+5. 资料列表与下载（`.../coursedata/stu-datalist`、`coursedata/downloadData`；主进程复用 Portal 会话流式下载到 `Downloads\StudyNext`，支持进度、取消、失败重试、打开、定位、单条历史删除且不删除实际文件）。
+6. 内嵌官方作业页（隔离 `WebContentsView`）：用户本人编辑、上传附件、暂时保存、确认后提交；附件上传有 `started/completed/failed` 事件与进度条；应用不代填、不代提交。
+7. 作业记录中心（作业名称、课程/教学班、截止时间、提交时间、平台状态、成绩/满分、教师批语、附件、官方入口）；提交后通过 `addStudentWorkNewWeb` 完成事件与 `/work/prompt` 导航触发单课程重新同步，不把 HTTP 成功当作平台提交成功。
+8. Portal 同步前后页面恢复守卫：同步结束后若当前页由同步流程产生则恢复用户原页面；登录过期、页面被用户切换、检测到用户鼠标/键盘操作或恢复失败时保留当前页并给出说明。
 
-尚未实现：原生作业编辑器、提交记录/成绩/教师批语模型、资料分页、Portal 页面自动恢复。已实现单课程重试、通知分页与覆盖统计。
+尚未实现：原生作业编辑器、真实多页资料验证（仅有模拟分页夹具）、批量下载全部资料、跨平台扩展。已实现单课程重试、通知分页与覆盖统计。
 
 ### 7.5 真实账号验证步骤（PoC 手册）
 

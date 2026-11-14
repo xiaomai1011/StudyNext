@@ -175,14 +175,18 @@ export default function App(): JSX.Element {
       notify('info', '已检测到作业提交结果，正在重新核验平台状态…')
       void (async () => {
         try {
-          if (event.platformCourseId) {
-            const course = data?.courses.find(
-              (item) =>
-                item.source === 'chaoxing' &&
-                (item.externalId ?? '').split(':')[0] === event.platformCourseId
-            )
-            if (course) await api.chaoxing.retryCourse(course.id)
+          if (!event.platformCourseId) {
+            throw new Error('无法从提交页面确定课程，请回到任务中心手动刷新状态')
           }
+          const course = data?.courses.find(
+            (item) =>
+              item.source === 'chaoxing' &&
+              (item.externalId ?? '').split(':')[0] === event.platformCourseId
+          )
+          if (!course) {
+            throw new Error('未找到提交作业对应的课程，请先同步课程列表')
+          }
+          await api.chaoxing.retryCourse(course.id)
           await refreshBootstrap()
           notify('success', '平台状态已重新同步')
         } catch (error: unknown) {

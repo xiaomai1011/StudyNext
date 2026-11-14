@@ -6,7 +6,8 @@ import type {
   PortalDownload,
   PortalLoginState,
   PortalNavigationEvent,
-  PortalState
+  PortalState,
+  PortalUploadEvent
 } from '@shared/types'
 import { PORTAL_PARTITION } from '@shared/constants'
 import { IPC } from '@shared/ipc'
@@ -21,12 +22,23 @@ import {
   upgradePortalHttpUrl
 } from './security'
 import { buildCredentialFillScript, isChaoxingLoginUrl } from './autofill'
+import { describeUploadCompletion, describeUploadError } from './upload-events'
 
 interface Rect {
   x: number
   y: number
   width: number
   height: number
+}
+
+export interface SyncNavigationResult {
+  restored: boolean
+  message: string | null
+}
+
+export interface SyncNavigationGuard {
+  begin: () => Promise<void>
+  end: () => Promise<SyncNavigationResult>
 }
 
 const IDLE_STATE: PortalState = {
@@ -52,9 +64,14 @@ export class PortalService {
   private readonly downloads = new Map<string, PortalDownload>()
   private readonly downloadItems = new Map<string, Electron.DownloadItem>()
   private readonly downloadRequests = new Map<string, { abort: () => void }>()
+  private readonly downloadRetryUrls = new Map<string, string>()
+  private readonly downloadRetryReferers = new Map<string, string>()
   private readonly reservedFilenames = new Set<string>()
   private downloadsHydrated = false
   private lastSubmitDetectedAt = 0
+  private syncNavigationSnapshot: string | null = null
+  private syncNavigationActive = false
+  private syncUserInteracted = false
 
   constructor(
     private readonly store: StudyNextStore,
@@ -66,6 +83,67 @@ export class PortalService {
 
   getState(): PortalState {
     return { ...this.state, navigationLog: [...this.state.navigationLog] }
+  }
+
+  /**
+   * Records the page the user is on before a background sync starts. The
+   * restore step only runs when the sync left the Portal on a known sync page;
+   * if the user navigated somewhere meaningful, their page is left untouched.
+   */
+  createSyncNavigationGuard(): SyncNavigationGuard {
+    return {
+      begin: async () => {
+        const contents = this.view?.webContents
+        this.syncNavigationSnapshot =
+          contents && !contents.isDestroyed() ? contents.getURL() : null
+        this.syncNavigationActive = true
+        this.syncUserInteracted = false
+      },
+      end: async () => {
+        const snapshot = this.syncNavigationSnapshot
+        this.syncNavigationSnapshot = null
+        const userInteracted = this.syncUserInteracted
+        this.syncNavigationActive = false
+        this.syncUserInteracted = false
+        if (!snapshot) return { restored: true, message: null }
+        if (userInteracted) {
+          return { restored: false, message: '同步期间检测到你的页面操作，未自动恢复原页面' }
+        }
+        const contents = this.view?.webContents
+        if (!contents || contents.isDestroyed()) {
+          return { restored: false, message: '官方页面已关闭，未恢复同步前页面' }
+        }
+        const current = contents.getURL()
+        if (current === snapshot) return { restored: true, message: null }
+        if (/passport|login|signin/i.test(current)) {
+          return { restored: false, message: '登录状态已过期，未恢复同步前页面；请重新登录学习通' }
+        }
+        if (!this.isSyncGeneratedPage(current)) {
+          return { restored: false, message: '同步期间页面已被切换，未自动恢复原页面' }
+        }
+        if (!isAllowedPortalUrl(snapshot)) {
+          return { restored: false, message: '同步前页面不属于学习通官方域名，未恢复' }
+        }
+        try {
+          await contents.loadURL(snapshot)
+          return { restored: true, message: null }
+        } catch {
+          return { restored: false, message: '同步完成，但原页面恢复失败' }
+        }
+      }
+    }
+  }
+
+  private isSyncGeneratedPage(url: string): boolean {
+    return [
+      /mooc2-ans\.chaoxing\.com\/mooc2-ans\/mycourse\/stu\b/i,
+      /mooc2-ans\.chaoxing\.com\/mooc2-ans\/mycourse\/studentcourse\b/i,
+      /kb\.chaoxing\.com\/res\/pc\/curriculum\/schedule\.html/i,
+      /exam-ans\/exam\/test\/examcode\/examlist/i,
+      /notice\.chaoxing\.com\/pc\/notice\/myNotice/i,
+      /mooc2-ans\.chaoxing\.com\/mooc2-ans\/coursedata\/stu-datalist/i,
+      /i\.chaoxing\.com\/base/i
+    ].some((pattern) => pattern.test(url))
   }
 
   getSecurityState() {
@@ -98,7 +176,8 @@ export class PortalService {
     await contents.loadURL(target)
   }
 
-  async open(entryId: string): Promise<void> {    const entry = this.store.getOfficialEntry(entryId)
+  async open(entryId: string): Promise<void> {
+    const entry = this.store.getOfficialEntry(entryId)
     if (!entry || !entry.enabled) {
       throw new UserFacingError('ENTRY_NOT_FOUND', '官方入口不存在或已停用')
     }
@@ -113,6 +192,12 @@ export class PortalService {
     this.configureSession()
     const view = new WebContentsView({ webPreferences: buildPortalWebPreferences() })
     this.view = view
+    view.webContents.on('before-input-event', (_event, input) => {
+      if (!this.syncNavigationActive) return
+      if (input.type === 'mouseDown' || input.type === 'keyDown') {
+        this.syncUserInteracted = true
+      }
+    })
     this.attachSecurityHandlers(view)
     window.contentView.addChildView(view)
     if (this.bounds.width > 0 && this.bounds.height > 0) {
@@ -652,6 +737,12 @@ export class PortalService {
 
   async downloadFile(url: string, suggestedName: string, referer = 'https://pan-yz.chaoxing.com/'): Promise<void> {
     const target = this.normalizeDownloadUrl(url)
+    const normalizedReferer = this.normalizeDownloadUrl(referer)
+    // 学习通下载接口依赖 Portal 分区内的登录 Cookie；首次下载时先预热官方入口，
+    // 否则全新启动后直接点“下载”可能得到空响应或安全验证页。
+    if (!this.view) {
+      await this.open('entry-home')
+    }
     const directory = this.resolveDownloadDirectory()
     const filename = uniqueFilename(directory, suggestedName || 'download', this.reservedFilenames)
     this.reservedFilenames.add(filename)
@@ -669,6 +760,8 @@ export class PortalService {
       savePath
     }
     this.recordDownload(record)
+    this.downloadRetryUrls.set(id, target)
+    this.downloadRetryReferers.set(id, normalizedReferer)
     const portalSession = session.fromPartition(PORTAL_PARTITION)
     const request = net.request({
       url: target,
@@ -676,7 +769,7 @@ export class PortalService {
       useSessionCookies: true,
       redirect: 'follow'
     })
-    request.setHeader('Referer', this.normalizeDownloadUrl(referer))
+    request.setHeader('Referer', normalizedReferer)
     this.downloadRequests.set(id, request)
     await new Promise<void>((resolve) => {
       let settled = false
@@ -730,6 +823,8 @@ export class PortalService {
         stream.on('finish', () => {
           if (settled) return
           settled = true
+          this.downloadRetryUrls.delete(id)
+          this.downloadRetryReferers.delete(id)
           this.finishDownload(id, 'completed', received)
           resolve()
         })
@@ -767,13 +862,41 @@ export class PortalService {
     const item = this.downloadItems.get(id)
     if (item) item.cancel()
     const request = this.downloadRequests.get(id)
-    if (request) request.abort()  }
+    if (request) request.abort()
+  }
+
+  async retryDownload(id: string): Promise<void> {
+    const item = this.downloads.get(id) ?? this.store.listDownloads().find((entry) => entry.id === id)
+    if (!item) throw new UserFacingError('DOWNLOAD_NOT_FOUND', '下载记录不存在')
+    if (item.state === 'progressing') {
+      throw new UserFacingError('DOWNLOAD_BUSY', '该下载仍在进行中')
+    }
+    const target = this.downloadRetryUrls.get(id)
+    if (!target) {
+      throw new UserFacingError('DOWNLOAD_EXPIRED', '下载地址已过期，请从资料中心重新下载')
+    }
+    const referer = this.downloadRetryReferers.get(id) ?? 'https://pan-yz.chaoxing.com/'
+    await this.downloadFile(target, item.filename, referer)
+  }
+
+  deleteDownload(id: string): void {
+    const item = this.downloads.get(id)
+    if (item?.state === 'progressing') {
+      throw new UserFacingError('DOWNLOAD_BUSY', '该下载仍在进行中，不能删除记录')
+    }
+    this.downloads.delete(id)
+    this.downloadRetryUrls.delete(id)
+    this.downloadRetryReferers.delete(id)
+    this.store.deleteDownload(id)
+  }
 
   clearDownloads(): void {
     const removable: string[] = []
     for (const [id, item] of this.downloads) {
       if (item.state === 'progressing') continue
       this.downloads.delete(id)
+      this.downloadRetryUrls.delete(id)
+      this.downloadRetryReferers.delete(id)
       removable.push(id)
     }
     this.store.deleteFinishedDownloads(removable)
@@ -847,6 +970,13 @@ export class PortalService {
     }
   }
 
+  private emitUpload(event: PortalUploadEvent): void {
+    const window = this.getWindow()
+    if (window && !window.isDestroyed()) {
+      window.webContents.send(IPC.portalUploadEvent, event)
+    }
+  }
+
   private finishDownload(id: string, state: PortalDownload['state'], receivedBytes?: number): void {
     const current = this.downloads.get(id)
     this.downloadRequests.delete(id)
@@ -876,6 +1006,44 @@ export class PortalService {
         this.maybeEmitSubmitDetected(details.url, true)
       }
     )
+    const uploadUrls = [
+      'https://mooc1.chaoxing.com/upload-ans/ueditorupload/*',
+      'https://mooc1.chaoxing.com/upload-ans/*'
+    ]
+    portalSession.webRequest.onBeforeRequest({ urls: uploadUrls }, (details, callback) => {
+      if (details.method === 'POST') {
+        this.emitUpload({
+          state: 'started',
+          url: safeDisplayUrl(details.url),
+          statusCode: null,
+          message: '附件上传中…',
+          detectedAt: new Date().toISOString()
+        })
+      }
+      callback({})
+    })
+    portalSession.webRequest.onCompleted({ urls: uploadUrls }, (details) => {
+      if (details.method !== 'POST') return
+      const outcome = describeUploadCompletion(details.statusCode)
+      this.emitUpload({
+        state: outcome.state,
+        url: safeDisplayUrl(details.url),
+        statusCode: details.statusCode,
+        message: outcome.message,
+        detectedAt: new Date().toISOString()
+      })
+    })
+    portalSession.webRequest.onErrorOccurred({ urls: uploadUrls }, (details) => {
+      if (details.method !== 'POST') return
+      const outcome = describeUploadError(details.error)
+      this.emitUpload({
+        state: outcome.state,
+        url: safeDisplayUrl(details.url),
+        statusCode: null,
+        message: outcome.message,
+        detectedAt: new Date().toISOString()
+      })
+    })
     portalSession.on('will-download', (_event, item) => {
       const directory = this.resolveDownloadDirectory()
       const filename = uniqueFilename(directory, item.getFilename(), this.reservedFilenames)

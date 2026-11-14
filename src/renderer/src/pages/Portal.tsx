@@ -10,6 +10,7 @@ import {
   RefreshCw,
   ShieldCheck,
   Trash2,
+  UploadCloud,
   X
 } from 'lucide-react'
 import type {
@@ -17,7 +18,8 @@ import type {
   PortalDownload,
   PortalLoginState,
   PortalSecurityState,
-  PortalState
+  PortalState,
+  PortalUploadEvent
 } from '@shared/types'
 import type { ToastKind } from '../components/ToastStack'
 import { errorMessage } from '../lib/format'
@@ -64,6 +66,7 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
   const [busy, setBusy] = useState(false)
   const [downloads, setDownloads] = useState<PortalDownload[]>([])
   const [showDownloads, setShowDownloads] = useState(false)
+  const [uploadStatus, setUploadStatus] = useState<PortalUploadEvent | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const api = window.studynext
 
@@ -88,6 +91,7 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
         return [item, ...next]
       })
     })
+    const unsubscribeUpload = api.portal.onUpload((event) => setUploadStatus(event))
     void api.portal
       .downloads()
       .then((items) => {
@@ -98,10 +102,17 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
       alive = false
       unsubscribe()
       unsubscribeDownload()
+      unsubscribeUpload()
       void api.portal.close()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!uploadStatus || uploadStatus.state === 'started') return
+    const timer = window.setTimeout(() => setUploadStatus(null), 4000)
+    return () => window.clearTimeout(timer)
+  }, [uploadStatus])
 
   useLayoutEffect(() => {
     const node = stageRef.current
@@ -316,6 +327,26 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
         </button>
       </div>
 
+      {uploadStatus ? (
+        <div className={`portal-upload-status ${uploadStatus.state}`}>
+          <UploadCloud />
+          <span>
+            <strong>
+              {uploadStatus.state === 'started'
+                ? '附件上传中'
+                : uploadStatus.state === 'completed'
+                  ? '附件上传成功'
+                  : '附件上传失败'}
+            </strong>{' '}
+            {uploadStatus.message}
+            {uploadStatus.state === 'started' ? '；可在官方附件对话框中取消或重新选择文件' : ''}
+          </span>
+          {uploadStatus.state === 'started' ? (
+            <span className="portal-upload-bar" aria-hidden="true" />
+          ) : null}
+        </div>
+      ) : null}
+
       {showDownloads ? (
         <section className="portal-downloads">
           <div className="portal-downloads-head">
@@ -391,6 +422,35 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
                           onClick={() => void api.portal.cancelDownload(item.id).catch((error: unknown) => notify('error', errorMessage(error)))}
                         >
                           取消
+                        </button>
+                      ) : item.state === 'interrupted' || item.state === 'cancelled' ? (
+                        <button
+                          type="button"
+                          className="text-link"
+                          onClick={() => {
+                            void api.portal
+                              .retryDownload(item.id)
+                              .then(() => api.portal.downloads())
+                              .then(setDownloads)
+                              .catch((error: unknown) => notify('error', errorMessage(error)))
+                          }}
+                        >
+                          重试
+                        </button>
+                      ) : null}
+                      {item.state !== 'progressing' ? (
+                        <button
+                          type="button"
+                          className="text-link danger-link"
+                          onClick={() => {
+                            void api.portal
+                              .deleteDownload(item.id)
+                              .then(() => api.portal.downloads())
+                              .then(setDownloads)
+                              .catch((error: unknown) => notify('error', errorMessage(error)))
+                          }}
+                        >
+                          删除记录
                         </button>
                       ) : null}
                     </div>

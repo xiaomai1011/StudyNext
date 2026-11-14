@@ -1135,6 +1135,10 @@ export class StudyNextStore {
     })
   }
 
+  deleteDownload(id: string): void {
+    this.db.prepare('DELETE FROM downloads WHERE id = ?').run(id)
+  }
+
   listNotices(limit = 50): AppNotice[] {
     const rows = this.db
       .prepare(
