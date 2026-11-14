@@ -3,7 +3,7 @@
 - 版本：0.4.0 开发基线
 - 日期：2026-11-12
 - 适用范围：StudyNext C 路线（Electron 桌面客户端 + 隔离 Portal + 可插拔 Provider）
-- 结论：官方 API 授权仍未获证实；本轮已实现“用户本人 Web Session”的课程、作业与 DDL、课表、考试、章节、通知、资料同步，以及资料下载、下载管理器和内嵌官方页面的编辑/附件/草稿/提交入口。平台写操作只通过用户本人正常登录的内嵌官方页面完成，应用不伪造提交或进度。
+- 结论：官方 API 授权仍未获证实；本轮已实现“用户本人 Web Session”的课程、作业与 DDL、课表、考试、章节、通知、资料同步，资料下载与流式下载管理器，作业附件解析、作业记录中心，以及内嵌官方页面的编辑/附件上传/草稿/提交入口。平台写操作只通过用户本人正常登录的内嵌官方页面完成，应用不伪造提交或进度。
 
 ## 1. 判定图例
 
@@ -25,7 +25,7 @@
 | 2   | 课程详情     | 用户手动导入      | 机构授权后可用 | 快照课程字段 + 官方页面                                | Web Session 只取课程卡片字段；教学大纲、学分、班级详情未解析                            |
 | 3   | 作业列表     | Web Session 只读  | 机构授权后可用 | `mooc2/work/list` + `parseHomeworkList`                | 依赖课程页 `enc/openc/workEnc` 与 `stuenc`；单课失败隔离                                |
 | 4   | 作业截止时间 | Web Session 只读  | 机构授权后可用 | 作业详情页 `resolveDeadline`                           | 支持有年份与无年份格式；解析失败保留任务并显示“截止时间待确认”                           |
-| 5   | 作业提交状态 | Web Session 只读  | 机构授权后可用 | `platformStatus` / `platformStatusKind`                | 读取平台状态文本；已完成/已提交/待批阅/已评分→done，未提交/待完成→pending；“已发布”等其余文本→unknown |
+| 5   | 作业提交状态 | Web Session 只读  | 机构授权后可用 | `platformStatus` / `platformStatusKind`                | 读取平台状态文本；待批阅→pending_review，已批阅/已评分→reviewed，已完成→done，已提交→submitted，未提交/待完成→not_submitted；“已发布”等其余文本→unknown |
 | 6   | 考试列表     | Web Session 只读  | 机构授权后可用 | `exam-ans/exam/test/examcode/examlist` + `parseExamList` | 只读列表与官方入口；不进入作答页、不读取答案；考试状态与作业状态分离 |
 | 7   | 考试时间     | Web Session 只读  | 机构授权后可用 | 考试列表“考试时间”列 + `parseExamDate` | 解析开始/结束时间、时长；无数据时显示空态，不伪造考场/座位 |
 | 8   | 课程公告     | 仅官方页面可访问  | 机构授权后可用 | Portal 课程页 | 无公告模型、全文同步或已读状态 |
@@ -35,8 +35,8 @@
 | 12  | 学习进度     | Web Session 只读  | 机构授权后可用 | 章节“已完成任务点 n/total” + 学习中心 | 平台统计与本地手动状态分离；不写回学习通 |
 | 13  | 课件和资料   | Web Session 可操作 | 机构授权后可用 | 课程页“资料” iframe + `parseMaterialList` + `downloadData` | 文件夹/文件/外链、名称/类型/大小、官方入口；主进程复用同一会话下载到 `Downloads\StudyNext`，支持进度、取消、打开与定位 |
 | 14  | 课程课表     | Web Session 只读  | 机构授权后可用 | `kb.chaoxing.com/pc/curriculum/getMyLessons`（Portal 同源逐周）+ `schedule.ts` | 逐周 1..maxWeek 拉取并按课程/星期/节次/地点聚合；semesterStart、maxWeek 落库；跨教学班重复节次界面去重 |
-| 15  | 作业编辑与提交 | Web Session 可操作 | 机构授权后可用 | 隔离 `WebContentsView` 内官方作业页 | 用户本人编辑、上传附件、暂时保存、确认后提交；应用不代填、不代提交、不伪造状态 |
-| 16  | 提交结果/成绩/批语 | 仅官方页面可访问 | 机构授权后可用 | 官方作业详情页 | 当前未建立原生模型与同步；不推测未返回的分数或批语 |
+| 15  | 作业编辑与提交 | Web Session 可操作 | 机构授权后可用 | 隔离 `WebContentsView` 内官方作业页 | 用户本人编辑、上传附件、暂时保存、确认后提交；附件上传经 WebUploader 真实验证，草稿保存/重进保留已验证；应用不代填、不代提交、不伪造状态 |
+| 16  | 提交结果/成绩/批语 | Web Session 只读 | 机构授权后可用 | 官方作业详情页 + 作业记录中心 | 已解析 `score/fullScore/teacherFeedback/attachments` 并落库；`submittedAt` 平台未返回时为 null；提交后通过 `addStudentWorkNewWeb` 完成事件与 `/work/prompt` 导航触发单课程重新同步 |
 
 ## 3. 逐项结论
 
@@ -171,3 +171,5 @@ v0.4.0 验收同时看两条线：
 | 2026-11-12 | 建立能力矩阵基线：官方授权未获证实，能力以手动导入与官方页面为主                         |
 | 2026-11-12 | 新增 `Web Session 只读` 级别；课程列表、作业列表、截止时间、提交状态改为已实现（模拟测试） |
 | 2026-11-12 | 课表改为 Web Session 只读；Portal 同源逐周读取 `getMyLessons`，semesterStart/maxWeek/schedule 落库；真实账号 13 门课程/13 项作业/课表已验证 |
+| 2026-11-13 | 新增资料下载与流式下载管理器、下载历史持久化；作业详情解析成绩/满分/教师批语/附件 |
+| 2026-11-14 | 作业状态细分为 not_submitted/submitted/pending_review/reviewed/done/unknown；新增作业记录中心；附件上传、草稿保留、提交检测已真实验证 |

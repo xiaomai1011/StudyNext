@@ -45,6 +45,7 @@ export const IPC = {
   portalDownloads: 'portal:downloads',
   portalDownload: 'portal:download',
   portalDownloadEvent: 'portal:download-event',
+  portalSubmitDetected: 'portal:submit-detected',
   portalOpenDownload: 'portal:open-download',
   portalRevealDownload: 'portal:reveal-download',
   portalCancelDownload: 'portal:cancel-download',

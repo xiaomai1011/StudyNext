@@ -29,6 +29,7 @@ import type {
   StudyPoint,
   StudyPointKind,
   Task,
+  TaskAttachment,
   TaskChange,
   TaskCompletionSource,
   TaskField,
@@ -124,6 +125,7 @@ interface TaskRow {
   score: string | null
   full_score: string | null
   teacher_feedback: string | null
+  attachments_json: string
   manual_fields_json: string
   field_sources_json: string
   created_at: string
@@ -299,6 +301,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   score TEXT,
   full_score TEXT,
   teacher_feedback TEXT,
+  attachments_json TEXT NOT NULL DEFAULT '[]',
   manual_fields_json TEXT NOT NULL DEFAULT '[]',
   field_sources_json TEXT NOT NULL DEFAULT '{}',
   created_at TEXT NOT NULL,
@@ -739,6 +742,11 @@ export class StudyNextStore {
     addTaskColumn('score', 'TEXT')
     addTaskColumn('full_score', 'TEXT')
     addTaskColumn('teacher_feedback', 'TEXT')
+    addTaskColumn('attachments_json', "TEXT NOT NULL DEFAULT '[]'")
+    // 旧版本把平台状态简化为 pending/done，升级到细粒度状态。
+    this.db
+      .prepare("UPDATE tasks SET platform_status_kind = 'not_submitted' WHERE platform_status_kind = 'pending'")
+      .run()
     addTaskColumn('manual_fields_json', "TEXT NOT NULL DEFAULT '[]'")
     addTaskColumn('field_sources_json', "TEXT NOT NULL DEFAULT '{}'")
     this.db.exec(`
@@ -1828,6 +1836,7 @@ export class StudyNextStore {
       score?: string | null
       fullScore?: string | null
       teacherFeedback?: string | null
+      attachments?: TaskAttachment[]
       fieldSources?: Partial<Record<TaskField, DataSource>>
       manualFields?: TaskField[]
     } = {}
@@ -1852,8 +1861,8 @@ export class StudyNextStore {
             (id, title, description, course_id, priority, kind, status, due_at, completed_at,
              completion_source, source, external_id, source_updated_at, source_url, platform_status,
              platform_status_kind, submitted_at, score, full_score, teacher_feedback,
-             manual_fields_json, field_sources_json, created_at, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             attachments_json, manual_fields_json, field_sources_json, created_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `
         )
         .run(
@@ -1877,6 +1886,7 @@ export class StudyNextStore {
           options.score ?? null,
           options.fullScore ?? null,
           options.teacherFeedback ?? null,
+          JSON.stringify(options.attachments ?? []),
           JSON.stringify(manualFields),
           JSON.stringify(fieldSources),
           now,
@@ -1992,6 +2002,7 @@ export class StudyNextStore {
       score?: string | null
       fullScore?: string | null
       teacherFeedback?: string | null
+      attachments?: TaskAttachment[]
     }
   ): ImportedTaskUpsertResult {
     const source = options.source ?? 'import'
@@ -2016,6 +2027,7 @@ export class StudyNextStore {
           ...(options.teacherFeedback !== undefined
             ? { teacherFeedback: options.teacherFeedback }
             : {}),
+          ...(options.attachments !== undefined ? { attachments: options.attachments } : {}),
           fieldSources: fieldSourcesFor(source),
           completionSource: (input.status ?? 'todo') === 'done' ? 'platform' : null
         }),
@@ -2060,7 +2072,8 @@ export class StudyNextStore {
       this.db
         .prepare(
           `UPDATE tasks SET source_updated_at = ?, source_url = ?, platform_status = ?,
-             platform_status_kind = ?, submitted_at = ?, score = ?, full_score = ?, teacher_feedback = ?
+             platform_status_kind = ?, submitted_at = ?, score = ?, full_score = ?, teacher_feedback = ?,
+             attachments_json = ?
            WHERE id = ?`
         )
         .run(
@@ -2074,6 +2087,7 @@ export class StudyNextStore {
           options.teacherFeedback !== undefined
             ? options.teacherFeedback
             : existing.teacherFeedback,
+          JSON.stringify(options.attachments ?? existing.attachments),
           existing.id
         )
       if (platformChanged) {
@@ -2104,7 +2118,7 @@ export class StudyNextStore {
             title = ?, description = ?, course_id = ?, priority = ?, kind = ?, status = ?,
             due_at = ?, completed_at = ?, completion_source = ?, source_updated_at = ?,
             source_url = ?, platform_status = ?, platform_status_kind = ?, field_sources_json = ?,
-            submitted_at = ?, score = ?, full_score = ?, teacher_feedback = ?,
+            submitted_at = ?, score = ?, full_score = ?, teacher_feedback = ?, attachments_json = ?,
             updated_at = ?
           WHERE id = ?
         `
@@ -2130,6 +2144,7 @@ export class StudyNextStore {
           options.teacherFeedback !== undefined
             ? options.teacherFeedback
             : existing.teacherFeedback,
+          JSON.stringify(options.attachments ?? existing.attachments),
           now,
           existing.id
         )
@@ -2504,6 +2519,23 @@ function parseTaskFields(value: string): TaskField[] {
   }
 }
 
+function parseTaskAttachments(value: string): TaskAttachment[] {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+      .map((item) => ({
+        name: typeof item.name === 'string' ? item.name : '',
+        size: typeof item.size === 'string' ? item.size : null,
+        objectId: typeof item.objectId === 'string' ? item.objectId : null
+      }))
+      .filter((item) => item.name.length > 0)
+  } catch {
+    return []
+  }
+}
+
 function parseTaskFieldSources(value: string): Partial<Record<TaskField, DataSource>> {
   try {
     const parsed: unknown = JSON.parse(value)
@@ -2565,6 +2597,7 @@ function mapTaskRow(row: TaskRow, reminders: ReminderRule[]): Task {
     score: row.score ?? null,
     fullScore: row.full_score ?? null,
     teacherFeedback: row.teacher_feedback ?? null,
+    attachments: parseTaskAttachments(row.attachments_json),
     manualFields: parseTaskFields(row.manual_fields_json),
     fieldSources: parseTaskFieldSources(row.field_sources_json),
     createdAt: row.created_at,

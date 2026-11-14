@@ -4,6 +4,7 @@ import {
   dueBucket,
   filterTasks,
   formatRemainingCompact,
+  isPlatformTaskDone,
   normalizeReminderOffsets,
   sortTasksByDue
 } from '@shared/domain'
@@ -35,6 +36,7 @@ function task(overrides: Partial<Task> = {}): Task {
     score: null,
     fullScore: null,
     teacherFeedback: null,
+    attachments: [],
     createdAt: '2026-11-01T10:00:00+08:00',
     updatedAt: '2026-11-01T10:00:00+08:00',
     reminders: [],
@@ -111,5 +113,16 @@ describe('任务领域逻辑', () => {
     expect(formatRemainingCompact('2026-11-11T13:20:00+08:00', NOW)).toBe('1 小时 20 分钟后截止')
     expect(formatRemainingCompact('2026-11-11T10:00:00+08:00', NOW)).toBe('已逾期 2 小时')
     expect(formatRemainingCompact('2026-11-13T14:00:00+08:00', NOW)).toBe('2 天 2 小时后截止')
+  })
+})
+
+describe('平台作业完成状态', () => {
+  it('已提交、待批阅、已批阅和已完成都不算未提交', () => {
+    expect(isPlatformTaskDone('not_submitted')).toBe(false)
+    expect(isPlatformTaskDone('unknown')).toBe(false)
+    expect(isPlatformTaskDone('submitted')).toBe(true)
+    expect(isPlatformTaskDone('pending_review')).toBe(true)
+    expect(isPlatformTaskDone('reviewed')).toBe(true)
+    expect(isPlatformTaskDone('done')).toBe(true)
   })
 })

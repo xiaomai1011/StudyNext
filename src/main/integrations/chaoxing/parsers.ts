@@ -1,4 +1,4 @@
-import type { PlatformStatusKind } from '@shared/types'
+import type { PlatformStatusKind, TaskAttachment } from '@shared/types'
 
 /**
  * 学习通页面解析器（纯函数）。
@@ -243,6 +243,7 @@ export interface ChaoxingHomeworkDetail {
   score: string | null
   submittedAtText: string | null
   teacherFeedback: string | null
+  attachments: TaskAttachment[]
 }
 
 export function parseHomeworkDetail(html: string): ChaoxingHomeworkDetail {
@@ -255,7 +256,8 @@ export function parseHomeworkDetail(html: string): ChaoxingHomeworkDetail {
     deadlineText: null,
     score: null,
     submittedAtText: null,
-    teacherFeedback: null
+    teacherFeedback: null,
+    attachments: []
   }
   const countIndex = text.search(/题量[:：]/)
   if (countIndex > 0) {
@@ -299,7 +301,57 @@ export function parseHomeworkDetail(html: string): ChaoxingHomeworkDetail {
     const value = normalizeText(feedback[1])?.split(/\s(?:一|二|三|四|五)[.、]/)[0]
     if (value) result.teacherFeedback = value.slice(0, 300)
   }
+  result.attachments = parseTaskAttachments(html)
   return result
+}
+
+/**
+ * 作业详情页的附件列表有两种渲染方式：
+ * - 编辑器内容里的 `<iframe class="attach-iframe" objectid filename filesize>`
+ * - 已提交附件区的 `<div class="attach" data="<objectid>">` + dataName/dataSize
+ * 只读解析，不打开、不下载。
+ */
+export function parseTaskAttachments(html: string): TaskAttachment[] {
+  const result: TaskAttachment[] = []
+  const seen = new Set<string>()
+  const tagPattern = /<(iframe|div)\b[^>]*class="[^"]*\battach(?:-iframe)?\b[^"]*"[^>]*>/gi
+  let match: RegExpExecArray | null
+  while ((match = tagPattern.exec(html)) !== null) {
+    const tag = match[0]
+    const tagName = (match[1] ?? '').toLowerCase()
+    const objectId =
+      readTagAttribute(tag, 'objectid') ?? readTagAttribute(tag, 'data') ?? null
+    let name = readTagAttribute(tag, 'filename') ?? ''
+    let size = readTagAttribute(tag, 'filesize') ?? null
+    if (tagName === 'div') {
+      const end = html.indexOf('</div>', match.index)
+      const block = html.slice(match.index, end === -1 ? match.index + 800 : end)
+      name =
+        name ||
+        matchFirst(block, /class="dataName"[^>]*>([^<]{1,200})<\/span>/) ||
+        ''
+      size = size ?? matchFirst(block, /class="dataSize"[^>]*>([^<]{1,40})<\/span>/)
+    }
+    const normalizedName = normalizeText(decodeEntities(name))
+    if (!normalizedName) continue
+    const key = `${objectId ?? ''}|${normalizedName}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push({
+      name: normalizedName,
+      size: size ? normalizeText(size) : null,
+      objectId: objectId || null
+    })
+  }
+  return result
+}
+
+function readTagAttribute(tag: string, name: string): string | null {
+  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const pattern = new RegExp(`${escaped}\\s*=\\s*("([^"]*)"|'([^']*)')`, 'i')
+  const matched = pattern.exec(tag)
+  if (!matched) return null
+  return matched[2] ?? matched[3] ?? null
 }
 
 /**
@@ -340,8 +392,14 @@ export function resolveDeadline(text: string | null, now: Date = new Date()): st
 export function classifyHomeworkStatus(raw: string): PlatformStatusKind {
   const text = raw.replace(/\s+/g, '')
   if (!text) return 'unknown'
-  if (/(已完成|已提交|已交|待批阅|已批阅|已评分|已通过)/.test(text)) return 'done'
-  if (/(未提交|未交|待提交|待完成|进行中|未开始|未完成|待做|待学习)/.test(text)) return 'pending'
+  // 批阅状态优先于“已提交/已完成”：待批阅说明平台已收到提交但教师未批阅。
+  if (/(待批阅|待评阅|待评分)/.test(text)) return 'pending_review'
+  if (/(已批阅|已评阅|已评分)/.test(text)) return 'reviewed'
+  if (/(已完成|已通过)/.test(text)) return 'done'
+  if (/(已提交|已交|已上交)/.test(text)) return 'submitted'
+  if (/(未提交|未交|待提交|待完成|进行中|未开始|未完成|待做|待学习)/.test(text)) {
+    return 'not_submitted'
+  }
   // “已发布”只说明作业已发布，不代表学生已完成；保持未知，避免把未做的作业标成完成。
   return 'unknown'
 }

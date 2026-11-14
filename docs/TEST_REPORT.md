@@ -1,6 +1,6 @@
 # StudyNext 测试报告
 
-- 测试日期：2026-11-12
+- 测试日期：2026-11-14
 - 平台：Windows x64，Node.js v24.19.0，npm 12.0.2
 - Electron：45.3.0
 - 测试命令：`npm run typecheck`、`npm test`、`npm run build`、`npm run test:e2e`、`npm run build:win`
@@ -10,26 +10,26 @@
 | 项目                    | 结果                                                                                     |
 | ----------------------- | ---------------------------------------------------------------------------------------- |
 | TypeScript 严格类型检查 | 通过                                                                                     |
-| Vitest 单元/集成测试    | **80/80 通过**（10 个文件，含学习通 Web Session 32 项）                              |
+| Vitest 单元/集成测试    | **82/82 通过**（10 个文件，含学习通 Web Session 33 项）                              |
 | Playwright Electron E2E | **9/9 通过**（6 个规格：应用主流程、学习中心/题库/快照与 SSO、Portal、响应式、视图截图、学习通 UI） |
 | electron-vite 生产构建  | 通过                                                                                     |
 | Windows NSIS 安装包     | 通过                                                                                     |
 | 打包产物启动验证        | 通过（asar 主进程、preload、renderer 均正常）                                            |
 | 已知失败项              | 无                                                                                       |
 
-### 1.1 真实账号验收（2026-11-12，用户本人操作）
+### 1.1 真实账号验收（2026-11-14，用户本人操作）
 
-- 登录态：`authenticated`，Portal 标题“个人空间”，账号显示“钟嘉杨 / 广州理工学院(学生)”。
-- 只读同步：`同步完成，13 门课程、13 项作业、15 个章节、0 场考试、20 条通知、59 个资料`，失败详情为空。
+- 登录态：`authenticated`，Portal 标题“个人空间”，账号显示“真实学生账号（已脱敏）”。
+- 只读同步：`同步完成，13 门课程、14 项作业、15 个章节、0 场考试、21 条通知、59 个资料`，失败详情为空。
 - 课程字段：课程名、教师、学期、教学班链接已归一；同一课程不同教学班分别保留，界面显示教学班标识。
 - 作业字段：标题、平台状态（未交/已完成）、截止时间、详情入口已落库；已完成作业也会读取详情页截止时间。
 - 章节与学习点：`course_chapters` 15 条、`study_points` 38 条（7 已完成）；学习中心显示平台进度，应用内不可修改。
-- 通知与资料：`app_notices` 20 条、`materials` 58 条；通知可打开官方详情，资料可打开官方入口。
+- 通知与资料：`app_notices` 21 条、`materials` 59 条；通知可打开官方详情，资料可打开官方入口。
 - 说明：本次为单账号、单次手动同步，不代表所有学校/账号/接口长期稳定；验收清单见 `docs/CHAOXING_PHASE3_ACCEPTANCE.md`。
 
 ## 2. 单元与集成测试
 
-### 2.1 领域模型（`tests/unit/domain.test.ts`，6 项）
+### 2.1 领域模型（`tests/unit/domain.test.ts`，7 项）
 
 - DDL 升序排序，同一截止时间按优先级排序。
 - 逾期、今天、三天内、以后、已完成分组。
@@ -67,7 +67,7 @@
 - ICS 的 TZID、全天事件与折叠行解析。
 - 导入失败返回 failure，不虚报成功。
 
-### 2.5 安全与同步（`tests/unit/security.test.ts`，6 项）
+### 2.5 安全与同步（`tests/unit/security.test.ts`，7 项）
 
 - 仅允许学习通官方域名及其子域的 HTTPS 页面。
 - 拒绝带 userinfo 的官方 URL，避免用户名/密码样式地址绕过。
@@ -103,7 +103,7 @@
 - 返回第一个可创建目录；文件占用路径会抛出明确错误。
 - 候选路径中绝不回退到系统临时目录。
 
-### 2.10 学习通 Web Session（`tests/unit/chaoxing.test.ts`，32 项）
+### 2.10 学习通 Web Session（`tests/unit/chaoxing.test.ts`，33 项）
 
 - 登录态：passport 重定向判为 `logged_out`；个人空间结构判为 `authenticated`；空页面保持 `unknown`。
 - 个人资料解析昵称、学校、uid、fid。
@@ -127,7 +127,7 @@
 - 资料：解析文件夹/文件/外链、名称、类型、大小与官方链接。
 - 作业提交结果：解析提交时间、得分/满分与教师批语；批语截断到 300 字并剔除题目正文。
 
-真实账号验收：用户本人已在 Portal 登录，真实会话检查返回 `authenticated`（钟嘉杨 / 广州理工学院(学生)）。最新一次真实同步得到 13 门课程、14 项作业、15 个章节、0 场考试、21 条通知、59 个资料；短期缓存重复调用 3ms 返回缓存提示；课程详情页“同步此课程”单课程重试 11.9 秒完成。验收记录见 `docs/CHAOXING_PHASE3_ACCEPTANCE.md`。
+真实账号验收：用户本人已在 Portal 登录，真实会话检查返回 `authenticated`（真实学生账号，已脱敏）。最新一次真实同步得到 13 门课程、14 项作业、15 个章节、0 场考试、21 条通知、59 个资料；短期缓存重复调用 3ms 返回缓存提示；课程详情页“同步此课程”单课程重试 11.9 秒完成。验收记录见 `docs/CHAOXING_PHASE3_ACCEPTANCE.md`。
 
 ### 2.11 资料下载与内嵌作业页（真实验证）
 
@@ -139,7 +139,16 @@
 - 下载目录支持设置持久化，默认回退系统下载目录下 `StudyNext`；并发下载使用文件名预留避免重名覆盖。
 - 下载历史持久化到 SQLite，重启后遗留 `progressing` 记录标记为 `interrupted`，已完成记录保留。
 - 作业草稿：在实验4 内嵌页通过 UEditor API 写入测试文本，点击“暂时保存”并重载后内容保留；随后改为空白占位并再次保存，页面确认无可见测试文本。平台拒绝完全空内容，因此保留 `<p>&nbsp;</p>` 占位。
-- 附件上传：附件对话框与 `input[type=file]` 存在，但 CDP 文件选择拦截未触发 `fileChooserOpened`，本轮未完成真实上传验证。
+- 附件上传：程序化 `input.click()` 返回 Chromium 警告 `File chooser dialog can only be shown with a user activation.`；用 CDP `Runtime.evaluate` 的 `userGesture: true` 点击 `input[type=file]` 收到 `Page.fileChooserOpened`（`mode: selectMultiple`，`backendNodeId=11`），证明真实用户点击会打开系统文件选择器。随后用 `DOM.setFileInputFiles` 注入 56 字节测试文件，真实上传 POST `upload-ans/ueditorupload/attachment` 返回 200，附件以 `attach-iframe` 插入；点击“暂时保存”并重载后附件仍在，之后已清理测试附件。
+
+### 2.12 作业附件、提交检测与流式下载（2026-11-14 真实验证）
+
+- 附件解析：14 项作业中有 6 项解析出 `attachments`（AI大模型体验、学生实习资料汇总、实验1/2/3、就业岗位调研、实验4、第一章作业等），字段为 `name/size/objectId`；未知大小保持 null。
+- 附件上传：56 字节 `StudyNext-附件上传验证.txt` 经官方 WebUploader 上传成功，POST `https://mooc1.chaoxing.com/upload-ans/ueditorupload/attachment?...` 返回 HTTP 200，`objectid=df27ab47eac9fc4e34067e114909748a`；保存后重新进入实验4 页面仍保留，已清理。
+- 草稿：实验4 `answerId=55650091` 的 UEditor 内容经 `暂时保存` 后重载保留；完全空内容会被平台拒绝（`无效的参数：code-1`），最终以 `<p>&nbsp;</p>` 占位恢复空白。
+- 提交检测：导航到 `/mooc-ans/mooc2/work/prompt?...courseId=267068456...` 时，`onSubmitDetected` 收到 `{platformCourseId:'267068456', detectedAt:'2026-11-14T12:29:12.162Z'}`；应用自动调用单课程重试并得到 `课程重试完成：程序设计基础，6 项作业、0 个章节、15 个资料`，`lastSyncAt` 更新为 `2026-11-14T12:29:24.988Z`。本轮未自动点击最终提交，真实提交由用户本人确认。
+- 流式下载：28,411,295 字节 PPTX 用时 2.879 秒完成（`receivedBytes=totalBytes=28411295`，文件头 `50 4B 03 04`）；572,261,733 字节 `Dataset.zip` 用时 85.5 秒完成。取消测试在接收 19,271,680 字节后标记 `interrupted`，临时文件已删除；应用在下载中重启后记录恢复为 `interrupted`，恢复逻辑清理临时文件。
+- 安全校验：下载初始 URL 仅允许学习通官方 HTTPS，`userinfo`、非 443 端口拒绝；CDN 重定向仅允许 `cldisk.com` 及其子域，Cookie 仍按学习通域作用域发送，Referer 固定为 `pan-yz.chaoxing.com`。
 
 ## 3. Electron E2E
 
@@ -193,7 +202,7 @@
 ### 3.6 学习通 UI（`tests/e2e/chaoxing-ui.spec.ts`）
 
 - 课程中心显示同名课程的教学班标识；课程详情展示教学班；日历周视图显示真实节次。
-- 任务中心显示“同步 15 / 实际显示 14 / 隐藏逾期 1”；新建逾期任务后隐藏数增加，删除后恢复。
+- 任务中心显示“同步 N 项 · 显示 M 项 · 其中逾期 K 项”；新建逾期任务后总数和其中逾期同时增加，任务行保持可见。
 - 设置页密码显示/隐藏切换可用，输入值不被日志或快照记录。
 
 ## 4. 构建与打包

@@ -16,7 +16,22 @@ export type DataSource = 'demo' | 'manual' | 'import' | 'chaoxing'
 export type SyncState = 'not_configured' | 'syncing' | 'success' | 'partial' | 'failure'
 export type ChaoxingAuthState = 'unknown' | 'logged_out' | 'authenticated' | 'expired'
 export type ChaoxingTransport = 'session_fetch' | 'net_request' | 'none'
-export type PlatformStatusKind = 'pending' | 'done' | 'unknown'
+/**
+ * 平台作业状态。与本地完成状态分离：
+ * - not_submitted 未提交
+ * - submitted 已提交（等待批阅）
+ * - pending_review 待批阅
+ * - reviewed 已批阅/已评分
+ * - done 已完成/已通过
+ * - unknown 平台未给出可识别状态
+ */
+export type PlatformStatusKind =
+  | 'not_submitted'
+  | 'submitted'
+  | 'pending_review'
+  | 'reviewed'
+  | 'done'
+  | 'unknown'
 
 export interface ChaoxingCredentialStatus {
   saved: boolean
@@ -170,6 +185,12 @@ export interface TaskChange {
   changes: Array<{ field: TaskField; from: string | null; to: string | null }>
 }
 
+export interface TaskAttachment {
+  name: string
+  size: string | null
+  objectId: string | null
+}
+
 export interface Task {
   id: string
   title: string
@@ -191,6 +212,7 @@ export interface Task {
   score: string | null
   fullScore: string | null
   teacherFeedback: string | null
+  attachments: TaskAttachment[]
   manualFields: TaskField[]
   fieldSources: Partial<Record<TaskField, DataSource>>
   createdAt: string
@@ -429,8 +451,13 @@ export interface PortalDownload {
   savePath?: string
 }
 
-export interface PortalSecurityState {
-  sandbox: boolean
+export interface PortalSubmitEvent {
+  url: string
+  platformCourseId: string | null
+  detectedAt: string
+}
+
+export interface PortalSecurityState {  sandbox: boolean
   contextIsolation: boolean
   nodeIntegration: boolean
   hasPreload: boolean
@@ -452,6 +479,7 @@ export type NavigateTarget =
   | 'tasks'
   | 'exams'
   | 'materials'
+  | 'records'
   | 'questions'
   | 'calendar'
   | 'portal'
@@ -534,6 +562,7 @@ export interface StudyNextApi {
     downloadDirectory: () => Promise<string>
     chooseDownloadDirectory: () => Promise<string | null>
     onDownload: (callback: (item: PortalDownload) => void) => () => void
+    onSubmitDetected: (callback: (event: PortalSubmitEvent) => void) => () => void
     onState: (callback: (state: PortalState) => void) => () => void
   }
   entries: {

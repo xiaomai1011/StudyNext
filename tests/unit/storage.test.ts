@@ -192,6 +192,11 @@ describe('SQLite 持久化', () => {
       'source_url',
       'platform_status',
       'platform_status_kind',
+      'submitted_at',
+      'score',
+      'full_score',
+      'teacher_feedback',
+      'attachments_json',
       'manual_fields_json',
       'field_sources_json'
     ]) {
@@ -212,6 +217,11 @@ describe('SQLite 持久化', () => {
           'source_url',
           'platform_status',
           'platform_status_kind',
+          'submitted_at',
+          'score',
+          'full_score',
+          'teacher_feedback',
+          'attachments_json',
           'manual_fields_json',
           'field_sources_json'
         ])
@@ -219,6 +229,7 @@ describe('SQLite 持久化', () => {
       expect(migrated.getTask(taskId)?.title).toBe('迁移前任务')
       expect(migrated.getTask(taskId)?.sourceUrl).toBeNull()
       expect(migrated.getTask(taskId)?.platformStatusKind).toBe('unknown')
+      expect(migrated.getTask(taskId)?.attachments).toEqual([])
       expect(migrated.listTaskHistory(taskId)).toEqual([])
       expect(migrated.getMeta('schema_version')).toBe('3')
     } finally {

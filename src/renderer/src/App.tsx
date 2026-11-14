@@ -7,6 +7,7 @@ import {
   CalendarDays,
   CheckCircle2,
   ClipboardList,
+  FileText,
   FolderOpen,
   Globe2,
   GraduationCap,
@@ -44,6 +45,7 @@ import { Courses } from './pages/Courses'
 import { Tasks } from './pages/Tasks'
 import { Exams } from './pages/Exams'
 import { Materials } from './pages/Materials'
+import { Records } from './pages/Records'
 import { Calendar } from './pages/Calendar'
 import { Portal } from './pages/Portal'
 import { Settings } from './pages/Settings'
@@ -62,6 +64,7 @@ const NAV_ITEMS: Array<{ id: NavigateTarget; label: string; icon: typeof LayoutD
   { id: 'tasks', label: '任务中心', icon: ListChecks },
   { id: 'exams', label: '考试中心', icon: ClipboardList },
   { id: 'materials', label: '资料中心', icon: FolderOpen },
+  { id: 'records', label: '作业记录', icon: FileText },
   { id: 'calendar', label: '日历', icon: CalendarDays },
   { id: 'questions', label: '题目助手', icon: MessageSquareText },
   { id: 'portal', label: '官方页面', icon: Globe2 },
@@ -75,6 +78,7 @@ const ROUTE_TITLE: Record<NavigateTarget, string> = {
   tasks: '任务中心',
   exams: '考试中心',
   materials: '资料中心',
+  records: '作业记录',
   calendar: '日历',
   questions: '题目助手',
   portal: '官方页面',
@@ -165,6 +169,28 @@ export default function App(): JSX.Element {
       unsubMaximized()
     }
   }, [api, notify])
+
+  useEffect(() => {
+    return api.portal.onSubmitDetected((event) => {
+      notify('info', '已检测到作业提交结果，正在重新核验平台状态…')
+      void (async () => {
+        try {
+          if (event.platformCourseId) {
+            const course = data?.courses.find(
+              (item) =>
+                item.source === 'chaoxing' &&
+                (item.externalId ?? '').split(':')[0] === event.platformCourseId
+            )
+            if (course) await api.chaoxing.retryCourse(course.id)
+          }
+          await refreshBootstrap()
+          notify('success', '平台状态已重新同步')
+        } catch (error: unknown) {
+          notify('error', `提交后核验失败：${errorMessage(error)}`)
+        }
+      })()
+    })
+  }, [api, data?.courses, refreshBootstrap, notify])
 
   const theme = data?.settings.theme
   useEffect(() => {
@@ -551,6 +577,13 @@ export default function App(): JSX.Element {
       <Exams exams={data.exams} />
     ) : route === 'materials' ? (
       <Materials courses={data.courses} materials={data.materials} onDownload={handleMaterialDownload} />
+    ) : route === 'records' ? (
+      <Records
+        tasks={data.tasks}
+        courses={data.courses}
+        onOpenTask={(task) => setSelectedTaskId(task.id)}
+        onOpenInPortal={(task) => void handleOpenTaskInPortal(task)}
+      />
     ) : route === 'calendar' ? (
       <Calendar
         tasks={data.tasks}

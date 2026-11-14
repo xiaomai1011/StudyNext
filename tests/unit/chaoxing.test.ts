@@ -11,6 +11,7 @@ import {
   parseNoticeList,
   parseHomeworkDetail,
   parseHomeworkList,
+  parseTaskAttachments,
   parseProfile,
   readHiddenValue,
   resolveDeadline
@@ -148,7 +149,7 @@ describe('学习通页面解析', () => {
     expect(result.items[0]?.externalId).toBe('123')
     expect(result.items[0]?.url).toContain('https://mooc1.chaoxing.com/')
     expect(result.items[1]?.externalId).toBe('789')
-    expect(classifyHomeworkStatus(result.items[0]?.status ?? '')).toBe('pending')
+    expect(classifyHomeworkStatus(result.items[0]?.status ?? '')).toBe('not_submitted')
     expect(classifyHomeworkStatus(result.items[1]?.status ?? '')).toBe('done')
   })
 
@@ -192,6 +193,18 @@ describe('学习通页面解析', () => {
     expect(detail.teacherFeedback).toBe('思路清晰，注意边界条件。')
   })
 
+  it('解析作业详情中的提交附件并去重', () => {
+    const html = `
+      <div class="attach" data="obj-1"><span class="dataName">实验报告.docx</span><span class="dataSize">20.79K</span></div>
+      <iframe class="attach-iframe" objectid="obj-2" filename="截图.png" filesize="56B"></iframe>
+      <iframe class="attach-iframe" objectid="obj-2" filename="截图.png" filesize="56B"></iframe>`
+    const attachments = parseTaskAttachments(html)
+    expect(attachments).toEqual([
+      { name: '实验报告.docx', size: '20.79K', objectId: 'obj-1' },
+      { name: '截图.png', size: '56B', objectId: 'obj-2' }
+    ])
+  })
+
   it('把无年份截止时间补齐到最接近当前时间的年份', () => {
     const now = new Date('2026-11-12T12:00:00+08:00')
     expect(resolveDeadline('11-27 23:59', now)).toBe('2026-11-27T15:59:00.000Z')
@@ -204,7 +217,9 @@ describe('学习通页面解析', () => {
     expect(classifyHomeworkStatus('')).toBe('unknown')
     expect(classifyHomeworkStatus('查看详情')).toBe('unknown')
     expect(classifyHomeworkStatus('已发布')).toBe('unknown')
-    expect(classifyHomeworkStatus('待批阅')).toBe('done')
+    expect(classifyHomeworkStatus('待批阅')).toBe('pending_review')
+    expect(classifyHomeworkStatus('已批阅')).toBe('reviewed')
+    expect(classifyHomeworkStatus('已提交')).toBe('submitted')
   })
 })
 
@@ -232,6 +247,7 @@ function task(overrides: Partial<Task> = {}): Task {
     score: null,
     fullScore: null,
     teacherFeedback: null,
+    attachments: [],
     createdAt: '2026-11-01T10:00:00+08:00',
     updatedAt: '2026-11-01T10:00:00+08:00',
     reminders: [],
@@ -303,11 +319,11 @@ describe('学习通课程与任务落库', () => {
           externalId: 'course-1:work-1',
           source: 'chaoxing',
           platformStatus: '未提交',
-          platformStatusKind: 'pending'
+          platformStatusKind: 'not_submitted'
         }
       )
       expect(first.action).toBe('created')
-      expect(first.task.platformStatusKind).toBe('pending')
+      expect(first.task.platformStatusKind).toBe('not_submitted')
       expect(first.task.sourceUrl).toBe('https://mooc1.chaoxing.com/mooc2/work/view?workId=1')
 
       const second = store.upsertImportedTask(
@@ -488,12 +504,13 @@ describe('学习通会话状态机', () => {
             courseExternalId: '1001:2001',
             dueAt: '2026-11-20T15:59:00.000Z',
             platformStatus: '未提交',
-            platformStatusKind: 'pending',
+            platformStatusKind: 'not_submitted',
             sourceUrl: null,
             submittedAt: null,
             score: null,
             fullScore: null,
-            teacherFeedback: null
+            teacherFeedback: null,
+            attachments: []
           }
         ],
         errors: [],
@@ -510,7 +527,7 @@ describe('学习通会话状态机', () => {
       expect(status.syncedTasks).toBe(1)
       expect(status.lastSyncAt).not.toBeNull()
       const task = store.findTaskByExternalId('chaoxing', '1001:2001:work-1')
-      expect(task?.platformStatusKind).toBe('pending')
+      expect(task?.platformStatusKind).toBe('not_submitted')
       expect(task?.dueAt).toBe('2026-11-20T15:59:00.000Z')
     } finally {
       store.close()

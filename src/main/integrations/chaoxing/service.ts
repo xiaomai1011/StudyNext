@@ -1,4 +1,5 @@
 import type { ChaoxingSessionStatus, SyncProgressEvent, SyncState } from '@shared/types'
+import { isPlatformTaskDone } from '@shared/domain'
 import type { StudyNextStore } from '../../storage/store'
 import {
   ChaoxingAccessError,
@@ -301,7 +302,7 @@ export class ChaoxingSessionService {
           courseId: courseIdMap.get(record.courseExternalId) ?? null,
           priority: 'medium',
           kind: 'homework',
-          status: record.platformStatusKind === 'done' ? 'done' : 'todo',
+          status: isPlatformTaskDone(record.platformStatusKind) ? 'done' : 'todo',
           dueAt: record.dueAt,
           reminderOffsets,
           sourceUrl: record.sourceUrl
@@ -315,7 +316,8 @@ export class ChaoxingSessionService {
           submittedAt: record.submittedAt,
           score: record.score,
           fullScore: record.fullScore,
-          teacherFeedback: record.teacherFeedback
+          teacherFeedback: record.teacherFeedback,
+          attachments: record.attachments
         }
       )
       tasks += 1

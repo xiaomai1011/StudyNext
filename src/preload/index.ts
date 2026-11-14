@@ -16,6 +16,7 @@ import type {
   PortalDownload,
   PortalSecurityState,
   PortalState,
+  PortalSubmitEvent,
   QuestionCard,
   QuestionInput,
   QuestionSource,
@@ -152,6 +153,8 @@ const api: StudyNextApi = {
       ipcRenderer.invoke(IPC.portalChooseDownloadDirectory) as Promise<string | null>,
     onDownload: (callback: (item: PortalDownload) => void) =>
       subscribe<PortalDownload>(IPC.portalDownloadEvent, callback),
+    onSubmitDetected: (callback: (event: PortalSubmitEvent) => void) =>
+      subscribe<PortalSubmitEvent>(IPC.portalSubmitDetected, callback),
     onState: (callback: (state: PortalState) => void) =>
       subscribe<PortalState>(IPC.eventPortalState, callback)
   },

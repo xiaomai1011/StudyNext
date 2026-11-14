@@ -1,4 +1,9 @@
-import type { CourseSession, PlatformStatusKind, SyncProgressEvent } from '@shared/types'
+import type {
+  CourseSession,
+  PlatformStatusKind,
+  SyncProgressEvent,
+  TaskAttachment
+} from '@shared/types'
 import {
   ChaoxingParseError,
   classifyHomeworkStatus,
@@ -100,6 +105,7 @@ export interface ChaoxingTaskRecord {
   score: string | null
   fullScore: string | null
   teacherFeedback: string | null
+  attachments: TaskAttachment[]
 }
 
 export interface ChaoxingCourseChapters {
@@ -610,7 +616,8 @@ export class ChaoxingSessionAdapter {
         submittedAt: resolveDeadline(detail?.submittedAtText ?? null),
         score: detail?.score ?? null,
         fullScore: detail?.fullScore != null ? String(detail.fullScore) : null,
-        teacherFeedback: detail?.teacherFeedback ?? null
+        teacherFeedback: detail?.teacherFeedback ?? null,
+        attachments: detail?.attachments ?? []
       })
     }
     return result

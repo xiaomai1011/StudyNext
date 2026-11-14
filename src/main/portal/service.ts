@@ -1,6 +1,6 @@
-import { app, BrowserWindow, dialog, WebContentsView, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, net, WebContentsView, session, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { createWriteStream, existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { basename, extname, isAbsolute, join } from 'node:path'
 import type {
   PortalDownload,
@@ -51,9 +51,10 @@ export class PortalService {
   private currentUrl = ''
   private readonly downloads = new Map<string, PortalDownload>()
   private readonly downloadItems = new Map<string, Electron.DownloadItem>()
-  private readonly downloadRequests = new Map<string, AbortController>()
+  private readonly downloadRequests = new Map<string, { abort: () => void }>()
   private readonly reservedFilenames = new Set<string>()
   private downloadsHydrated = false
+  private lastSubmitDetectedAt = 0
 
   constructor(
     private readonly store: StudyNextStore,
@@ -669,47 +670,78 @@ export class PortalService {
     }
     this.recordDownload(record)
     const portalSession = session.fromPartition(PORTAL_PARTITION)
-    const controller = new AbortController()
-    this.downloadRequests.set(id, controller)
-    try {
-      const response = await portalSession.fetch(target, {
-        method: 'GET',
-        credentials: 'include',
-        redirect: 'follow',
-        cache: 'no-store',
-        signal: controller.signal,
-        headers: { Referer: this.normalizeDownloadUrl(referer) }
-      })
-      if (!this.isAllowedDownloadResponse(response)) {
+    const request = net.request({
+      url: target,
+      session: portalSession,
+      useSessionCookies: true,
+      redirect: 'follow'
+    })
+    request.setHeader('Referer', this.normalizeDownloadUrl(referer))
+    this.downloadRequests.set(id, request)
+    await new Promise<void>((resolve) => {
+      let settled = false
+      let received = 0
+      let stream: ReturnType<typeof createWriteStream> | null = null
+      const fail = (): void => {
+        if (settled) return
+        settled = true
+        if (stream) stream.destroy()
+        if (existsSync(savePath)) {
+          try {
+            unlinkSync(savePath)
+          } catch {
+            // 保留原始错误语义：下载失败时只清理临时文件。
+          }
+        }
         this.finishDownload(id, 'interrupted')
-        return
+        resolve()
       }
-      const total = Number(response.headers.get('content-length') ?? 0)
-      const buffer = Buffer.from(await response.arrayBuffer())
-      const current = this.downloads.get(id)
-      if (current) this.recordDownload({ ...current, totalBytes: total || buffer.length })
-      if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
-      writeFileSync(savePath, buffer)
-      this.finishDownload(id, 'completed', buffer.length)
-    } catch {
-      this.finishDownload(id, 'interrupted')
-    } finally {
+      request.on('redirect', (_status, _method, redirectUrl) => {
+        try {
+          this.normalizeDownloadUrl(redirectUrl, { allowCdn: true })
+        } catch {
+          request.abort()
+          fail()
+        }
+      })
+      request.on('response', (response) => {
+        const status = response.statusCode
+        const contentType = String(response.headers['content-type'] ?? '').toLowerCase()
+        if (status >= 400 || contentType.includes('text/html')) {
+          ;(response as unknown as { resume: () => void }).resume()
+          fail()
+          return
+        }
+        const total = Number(response.headers['content-length'] ?? 0)
+        const current = this.downloads.get(id)
+        if (current) this.recordDownload({ ...current, totalBytes: total || 0 })
+        if (!existsSync(directory)) mkdirSync(directory, { recursive: true })
+        stream = createWriteStream(savePath)
+        let lastEmitted = 0
+        response.on('data', (chunk: Buffer) => {
+          received += chunk.length
+          if (received - lastEmitted < 256 * 1024) return
+          lastEmitted = received
+          const item = this.downloads.get(id)
+          if (item) this.recordDownload({ ...item, receivedBytes: received })
+        })
+        response.on('error', fail)
+        stream.on('error', fail)
+        stream.on('finish', () => {
+          if (settled) return
+          settled = true
+          this.finishDownload(id, 'completed', received)
+          resolve()
+        })
+        ;(response as unknown as NodeJS.ReadableStream).pipe(stream)
+      })
+      request.on('error', fail)
+      request.on('abort', fail)
+      request.end()
+    }).finally(() => {
       this.downloadRequests.delete(id)
       this.reservedFilenames.delete(filename)
-    }
-  }
-
-  private isAllowedDownloadResponse(response: Response): boolean {
-    if (!response.ok) return false
-    if (response.url) {
-      try {
-        if (!isAllowedPortalUrl(response.url)) return false
-      } catch {
-        return false
-      }
-    }
-    const type = (response.headers.get('content-type') ?? '').toLowerCase()
-    return !type.includes('text/html')
+    })
   }
 
   async openDownload(id: string): Promise<void> {
@@ -763,14 +795,21 @@ export class PortalService {
     return directory
   }
 
-  private normalizeDownloadUrl(raw: string): string {
+  private normalizeDownloadUrl(raw: string, options: { allowCdn?: boolean } = {}): string {
     const target = upgradePortalHttpUrl(raw) ?? raw
-    if (!isAllowedPortalUrl(target) || !target.startsWith('https://')) {
+    const parsed = new URL(target)
+    if (!target.startsWith('https://')) {
       throw new UserFacingError('PORTAL_URL_BLOCKED', '仅支持从学习通官方 HTTPS 域名下载')
     }
-    const parsed = new URL(target)
     if (parsed.username || parsed.password || (parsed.port && parsed.port !== '443')) {
       throw new UserFacingError('PORTAL_URL_BLOCKED', '下载地址包含不允许的凭据或端口')
+    }
+    const host = parsed.hostname.toLowerCase()
+    const allowed =
+      isAllowedPortalUrl(target) ||
+      (options.allowCdn === true && (host === 'cldisk.com' || host.endsWith('.cldisk.com')))
+    if (!allowed) {
+      throw new UserFacingError('PORTAL_URL_BLOCKED', '仅支持从学习通官方 HTTPS 域名下载')
     }
     return target
   }
@@ -780,7 +819,16 @@ export class PortalService {
     this.downloadsHydrated = true
     for (const item of this.store.listDownloads()) {
       const stale = item.state === 'progressing'
-      const record: PortalDownload = stale ? { ...item, state: 'interrupted' } : item
+      if (stale && item.savePath && existsSync(item.savePath)) {
+        try {
+          unlinkSync(item.savePath)
+        } catch {
+          // 重启恢复时尽力清理未完成的临时文件。
+        }
+      }
+      const record: PortalDownload = stale
+        ? { ...item, state: 'interrupted', completedAt: new Date().toISOString() }
+        : item
       this.downloads.set(record.id, record)
       if (stale) this.store.upsertDownload(record)
     }
@@ -821,6 +869,13 @@ export class PortalService {
       callback(false)
     })
     portalSession.setPermissionCheckHandler(() => false)
+    portalSession.webRequest.onCompleted(
+      { urls: ['https://mooc1.chaoxing.com/mooc-ans/work/addStudentWorkNewWeb*'] },
+      (details) => {
+        if (details.method !== 'POST') return
+        this.maybeEmitSubmitDetected(details.url, true)
+      }
+    )
     portalSession.on('will-download', (_event, item) => {
       const directory = this.resolveDownloadDirectory()
       const filename = uniqueFilename(directory, item.getFilename(), this.reservedFilenames)
@@ -945,9 +1000,11 @@ export class PortalService {
     )
     contents.on('did-navigate', (_event, url) => {
       this.applyNavigatedUrl(url, 'navigate')
+      this.maybeEmitSubmitDetected(url)
     })
     contents.on('did-navigate-in-page', (_event, url) => {
       this.applyNavigatedUrl(url, 'navigate')
+      this.maybeEmitSubmitDetected(url)
     })
     contents.on('page-title-updated', (_event, title) => {
       this.updateState({ title })
@@ -967,6 +1024,30 @@ export class PortalService {
 
   private isNavigationAllowed(url: string): boolean {
     return isPortalNavigationAllowed(url, this.store.getSettings().trustedSsoDomains)
+  }
+
+  private maybeEmitSubmitDetected(url: string, isSubmitPost = false): void {
+    const isPromptPage = url.includes('/mooc-ans/mooc2/work/prompt') || url.includes('/work/prompt')
+    if (!isPromptPage && !isSubmitPost) return
+    if (isSubmitPost && url.includes('saveStatus=1')) return
+    const now = Date.now()
+    if (now - this.lastSubmitDetectedAt < 5000) return
+    this.lastSubmitDetectedAt = now
+    let platformCourseId: string | null = null
+    try {
+      const parsed = new URL(url)
+      platformCourseId = parsed.searchParams.get('courseId') ?? parsed.searchParams.get('courseid')
+    } catch {
+      platformCourseId = null
+    }
+    const window = this.getWindow()
+    if (window && !window.isDestroyed()) {
+      window.webContents.send(IPC.portalSubmitDetected, {
+        url: safeDisplayUrl(url),
+        platformCourseId,
+        detectedAt: new Date().toISOString()
+      })
+    }
   }
 
   private applyNavigatedUrl(

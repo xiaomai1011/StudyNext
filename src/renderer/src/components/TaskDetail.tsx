@@ -31,6 +31,15 @@ interface TaskDetailProps {
   onToggle: () => Promise<void>
 }
 
+const PLATFORM_STATUS_LABEL: Record<string, string> = {
+  not_submitted: '未提交',
+  submitted: '已提交',
+  pending_review: '待批阅',
+  reviewed: '已批阅',
+  done: '已完成',
+  unknown: '平台未提供'
+}
+
 export function TaskDetail({
   task,
   course,
@@ -171,11 +180,8 @@ export function TaskDetail({
           <div className="detail-item-label">平台状态</div>
           <div className="detail-item-value">
             {task.platformStatus ??
-              (task.platformStatusKind === 'done'
-                ? '已完成'
-                : task.platformStatusKind === 'pending'
-                  ? '未完成'
-                  : '平台未提供')}
+              PLATFORM_STATUS_LABEL[task.platformStatusKind] ??
+              '平台未提供'}
           </div>
         </div>
         {task.submittedAt ? (
@@ -197,6 +203,31 @@ export function TaskDetail({
           <div className="detail-item">
             <div className="detail-item-label">教师批语</div>
             <div className="detail-item-value">{task.teacherFeedback}</div>
+          </div>
+        ) : null}
+        {task.attachments.length > 0 ? (
+          <div className="detail-item">
+            <div className="detail-item-label">附件</div>
+            <div className="detail-item-value">
+              <ul className="task-attachment-list">
+                {task.attachments.map((attachment) => (
+                  <li key={`${attachment.objectId ?? attachment.name}-${attachment.name}`}>
+                    {attachment.name}
+                    {attachment.size ? ` · ${attachment.size}` : ''}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        ) : null}
+        {task.source === 'chaoxing' &&
+        (bucket === 'overdue' ||
+          ['submitted', 'pending_review', 'reviewed'].includes(task.platformStatusKind)) ? (
+          <div className="detail-note">
+            {bucket === 'overdue' ? '该作业已过截止时间，平台可能限制或不允许提交。' : null}
+            {['submitted', 'pending_review', 'reviewed'].includes(task.platformStatusKind)
+              ? '平台显示该作业已提交；如平台不允许修改或重新提交，以官方页面提示为准。'
+              : null}
           </div>
         ) : null}
         <div className="detail-item">

@@ -1,5 +1,18 @@
-import type { Course, CourseSession, ReminderRule, Task, TaskKind, TaskPriority, TaskStatus } from './types'
+import type {
+  Course,
+  CourseSession,
+  PlatformStatusKind,
+  ReminderRule,
+  Task,
+  TaskKind,
+  TaskPriority,
+  TaskStatus
+} from './types'
 import { UNKNOWN_DUE_AT } from './constants'
+
+export function isPlatformTaskDone(kind: PlatformStatusKind): boolean {
+  return kind === 'submitted' || kind === 'pending_review' || kind === 'reviewed' || kind === 'done'
+}
 
 export interface TaskFilters {
   query?: string
@@ -190,7 +203,8 @@ export function dedupeCourseSessions(
   return result
 }
 
-export function normalizeReminderOffsets(offsets: number[]): number[] {  return [...new Set(offsets)]
+export function normalizeReminderOffsets(offsets: number[]): number[] {
+  return [...new Set(offsets)]
     .filter((value) => Number.isFinite(value))
     .map((value) => Math.round(value))
     .filter((value) => value >= 5 && value <= 60 * 24 * 30)
