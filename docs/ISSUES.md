@@ -1,318 +1,99 @@
-# StudyNext 开发问题记录与开源项目审查说明
-
-记录日期：2026-11-11（2026-11-12 补充 v0.3）
-
-对应版本：StudyNext 0.3.0
-
-这份文档回答两个问题：
-
-1. 开发过程中实际遇到过哪些问题，分别是怎么定位和处理的；
-2. 对需求中列出的 GitHub 参考项目，实际看到了什么程度，哪些看过、哪些没有逐行读。
-
-## 1. GitHub 参考项目审查结论
-
-先给结论：**看了仓库主页、README、LICENSE、语言和目录结构，也对比了功能划分；没有把四个仓库全部 clone 下来逐文件审阅，更没有复制代码。**
-
-需求中列出的四个项目，以及当前分享会话里提到的 `xuexitong-cli`，审查深度如下。
-
-| 项目                                                                                                        | 实际查看内容                                                                                                                                                                                                                               | 没有做的事                                                                                                    | 在本项目中的使用方式                                                                                             |
-| ----------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| [Cooanyh/chaoxing-list](https://github.com/Cooanyh/chaoxing-list)                                           | 仓库主页、README、AGPL-3.0 LICENSE、根目录文件树；确认它是基于 `lcandy2/chaoxing-assignment` 修改的 2.5.0 用户脚本，核心文件 `chaoxing-list.user.js` 约 356 KB；确认其功能包括待办、作业、考试、课程任务、课程进度、读取异常提示和截止提醒 | 没有 clone 后逐行阅读 356 KB 用户脚本；没有运行脚本；没有复制其中的 DOM 选择器、接口调用或 UI 代码            | 只借鉴“跨课程任务聚合、截止时间优先、同步状态要明确提示”的信息架构；本项目用 React/SQLite 独立实现               |
-| [mshzy/study_assistant](https://github.com/mshzy/study_assistant)                                           | 仓库主页、README、MIT LICENSE、根目录；确认主代码在 `local_app`，是 Flutter 本地应用，README 说明登录、作业同步、提醒和桌面小组件都在该目录                                                                                                | 没有逐文件阅读 Dart/Flutter 实现；没有把它的同步逻辑移植到 Electron；没有运行 Flutter 应用                    | 只参考“课程与任务分离、提醒预设、同步失败要显式呈现”的产品划分；数据模型和 UI 为独立实现                         |
-| [helloene/chaoxing-xuexitong-student-portal](https://github.com/helloene/chaoxing-xuexitong-student-portal) | 仓库主页、README、MIT LICENSE、文件列表；确认是 14 个入口的纯静态 PWA 导航页，包含 `index.html`、`script.js`、`styles.css`、`sw.js` 等                                                                                                     | 没有复制它的 HTML/CSS/JS，也没有照搬它的视觉设计；没有把它当作数据接口                                        | 只把官方入口 URL 作为事实性配置参考；本项目入口由 `BUILTIN_ENTRIES` 独立维护                                     |
-| [unraous/uxuescript](https://github.com/unraous/uxuescript)                                                 | 仓库主页、README、GPL-3.0 LICENSE、目录结构；确认是基于 Rust + Tauri 2 + Vue 3 的自动刷课/AI 答题客户端，包含 `injected/` 课程脚本、`src-tauri/`、AI 答题和考试辅助说明                                                                    | 没有阅读或复制 `injected/chaoxing/course.js` 的自动化实现；没有复用其字体还原、题目提取或答题逻辑；没有运行它 | 功能方向明确排除；只把“桌面端 + 内嵌 WebView + 本地模型配置”的产品形态作为反面边界参考。GPL-3.0 代码未进入本项目 |
-| `xuexitong-cli`（分享会话中提到，不是原始四个仓库之一）                                                     | 已 clone 到 `.tmp-research/xuexitong-cli`，确认 MIT LICENSE、commit `74b843ad4a3439a6ee5ba33f6a3288d9be6ed990`；阅读 README 与 `xuexitong_mcp/client.py`，核对 16 个只读工具、登录 Cookie 依赖和课程/作业/考试/通知/课表接口               | 没有逐行阅读全部 Python 代码；没有运行它的登录流程；没有把接口调用、密码处理或代码复制进 StudyNext            | 作为后续“授权只读数据适配器”的概念参考；当前实时适配器仍是 `not_configured`，没有声称已接入                      |
-
-### 1.1 为什么没有把四个仓库全部逐行读完
-
-- 两个项目的技术栈与当前工程不兼容：`chaoxing-list` 是浏览器用户脚本，`study_assistant` 是 Flutter；逐行读并不能直接复用。
-- `uxuescript` 明确是自动刷课/AI 代答工具，功能方向与当前产品边界冲突，且为 GPL-3.0；只做许可与能力层面的排除记录，不进入实现。
-- 静态门户项目只需要确认入口清单和“官方页面承载”的产品思路，代码量不大但没有复制价值。
-- 真正需要严谨对待的是许可证和数据来源，所以在 `docs/research.md` 记录了来源、许可证和复用结论，并在本项目内独立实现。
-- `xuexitong-cli` 在后续 v0.3 调研中做了 clone 和只读代码审查，但只看了 README 与协议层 `client.py`，没有逐行读全部项目，也没有复制代码。
-
-### 1.2 许可证记录
-
-| 项目                                       | 许可证   | 是否复制代码 |
-| ------------------------------------------ | -------- | ------------ |
-| Cooanyh/chaoxing-list                      | AGPL-3.0 | 否           |
-| mshzy/study_assistant                      | MIT      | 否           |
-| helloene/chaoxing-xuexitong-student-portal | MIT      | 否           |
-| unraous/uxuescript                         | GPL-3.0  | 否           |
-| xuexitong-cli                              | MIT      | 否           |
-
-## 2. 实际遇到的问题
-
-### 2.1 环境、安装和启动
-
-#### P1. npm 安装脚本被拦截，Electron 二进制缺失
-
-- 现象：`npm install` 成功，但 `node_modules/electron/dist` 不存在，启动时报 Electron 二进制缺失。
-- 原因：当前环境的 `allowScripts` 策略拦截了 Electron 的 postinstall 脚本。
-- 处理：执行 `node node_modules/electron/install.js` 补下载二进制；正式项目保留正常的 `postinstall` 安装方式。
-- 影响：只影响当前自动化宿主，不影响源码逻辑。
-
-#### P2. Electron 45 在当前宿主启动即崩溃（已复核并升级）
-
-- 现象：最初 Electron 45.3.0 在业务代码加载前崩溃，退出码 `0xc0000005`，崩溃偏移约 `0x7e7090b`；最小复现脚本同样复现。
-- 排查：确认崩溃发生在 `app.whenReady()` 之前；改用显式已存在、可写且有权限的 `--user-data-dir` 后可以启动，说明默认 profile/目录权限是触发因素之一，而不是 React 或 SQLite 代码。
-- 处理：先用 38.8.6 继续开发；v0.3 重新用 Electron 45.3.0 做启动探针、完整 E2E、生产构建和打包版验证，均通过，因此升级到 45.3.0。
-- 经验：不能把“默认 profile 下崩溃”直接归因为 Electron 版本；必须用显式 user-data-dir 做隔离复现。自动化环境仍需 `STUDYNEXT_DATA_DIR` 与 `--user-data-dir`。
-
-#### P3. 默认 AppData 目录创建失败（v0.3 已移除 temp 回退）
-
-- 现象：`EPERM: operation not permitted, mkdir 'C:\Users\...\AppData\Roaming\StudyNext'`。
-- 原因：当前自动化宿主对 Electron 子进程写入 AppData/Temp 有限制；系统 Node 可以写，但 Electron 子进程被策略拦截。
-- 处理：`resolveUserDataPath()` 只尝试 `%LOCALAPPDATA%\StudyNext` 和应用数据目录；`STUDYNEXT_DATA_DIR` 可覆盖。所有候选不可写时显示“无法创建本地数据目录”并退出，**不再回退系统临时目录**，避免重启后误以为数据丢失。
-- 测试处理：E2E 使用工作区下 `.tmp-*` 作为数据目录，避免读写真实用户数据。
-
-#### P4. `ELECTRON_RUN_AS_NODE=1` 导致 GUI 启动异常
-
-- 现象：启动 Electron 后行为像 Node 进程，窗口不出现。
-- 原因：当前 shell 环境存在 `ELECTRON_RUN_AS_NODE=1`。
-- 处理：启动 GUI 前清除该环境变量：
-
-```powershell
-Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-```
-
-#### P5. E2E 的 Chromium profile 锁错误
-
-- 现象：使用系统临时目录或 AppData 时出现 `Lock file can not be created`，错误码 5。
-- 原因：宿主目录权限和残留 profile 锁。
-- 处理：每个 E2E 用例使用工作区内唯一的 `--user-data-dir` 和 `STUDYNEXT_DATA_DIR`，结束后递归清理；`rmSync` 增加重试。
-
-#### P6. 系统代理破坏 Portal 测试的 DNS 映射
-
-- 现象：`--host-resolver-rules=MAP test.chaoxing.com 127.0.0.1` 不生效，Portal 测试连不到本地 HTTPS 服务。
-- 原因：环境设置了 `HTTP_PROXY=http://127.0.0.1:7897`，代理接管了请求。
-- 处理：E2E 启动参数增加 `--no-proxy-server`；这是测试参数，正式应用不默认关闭用户代理。
-
-#### P7. 本地 HTTPS 测试证书不被 Electron 接受
-
-- 现象：Portal 测试页加载失败，错误为证书不受信任。
-- 处理：测试内使用 `session.fromPartition('persist:studynext-portal').setCertificateVerifyProc((_request, callback) => callback(0))` 仅接受测试证书；正式应用仍执行正常证书校验。
-
-### 2.2 TypeScript 与数据模型
-
-#### P8. `exactOptionalPropertyTypes` 引发的编译错误
-
-- `BrowserWindow` 选项中的 `x`/`y` 类型为 `number | undefined`，与 `number` 不兼容。
-- `import.ts` 中 `compact[1]`、`compact[2]` 可能为 `undefined`。
-- IPC 层把 `status?: TaskStatus` 和 settings patch 的 `undefined` 直接传给严格输入类型。
-- 处理：条件展开 `...(state.x !== undefined ? { x: state.x } : {})`、`??` 默认值、`toTaskUpsertInput`/`toSettingsPatch` 只传递已定义字段。
-
-#### P9. 任务筛选把“全部课程”和“未关联课程”混为一谈
-
-- 现象：任务页选择“全部课程”时，实际把 `courseId: undefined` 传给了筛选函数，结果是空列表或错误列表。
-- 原因：`filterTasks` 中 `courseId: null` 表示“未关联课程”，省略字段才表示不筛选。
-- 处理：改为条件展开：
-
-```ts
-...(courseId !== 'all' ? { courseId } : {})
-```
-
-#### P10. 初始校验 schema 使用了错误的 ID 字段
-
-- 现象：课程收藏校验误用了 `taskId`。
-- 处理：改为 `favoriteSchema = z.object({ id: z.string().uuid(), favorite: z.boolean() }).strict()`。
-
-#### P11. 打开数据目录没有错误反馈
-
-- 现象：`shell.openPath` 失败时没有提示。
-- 处理：改为 async，检查返回的 message 并抛出 `UserFacingError('OPEN_DIRECTORY_FAILED', message)`。
-
-#### P12. 快照解析的跨课程 ID 冲突
-
-- 现象：不同课程使用相同章节/学习点外部 ID 时，第二次导入会覆盖第一次或命中错误记录。
-- 处理：章节/学习点唯一索引从全局 `(source, external_id)` 改为 `(course_id, source, external_id)`；查询也按 `course_id` 过滤。
-- 任务外部 ID 增加课程前缀，避免不同课程的同名任务冲突。
-
-#### P13. 快照任务重复导入
-
-- 现象：同一快照既有顶层 `homeworks` 又有课程内嵌 `homeworks` 时，任务可能被导入两次。
-- 处理：`taskKeys`/`addParsedTask` 统一去重；嵌套任务只遍历一次；`externalId` 加课程前缀后再比较。
-
-#### P14. 布尔值字符串解析错误
-
-- 现象：`valueToBoolean('false')` 曾因为 `Boolean('false') === true` 被当作已完成。
-- 处理：只接受 `true`、`1`、`yes`、`done`、`complete`、`completed`、`已完成` 等显式值。
-
-#### P15. 进度字段的 1 到底是 1% 还是 100%
-
-- 现象：数值 `1` 和字符串 `"1%"` 语义不明确。
-- 处理：显式百分比字符串按百分比处理；数值 `0–1` 视为比例（`0.5` → 50%）；增加单元测试锁定行为。
-
-### 2.3 运行时、安全和产品语义
-
-#### P16. 快照导入被误标成“学习通实时同步”
-
-- 现象：`recordSnapshotImport` 曾设置 `source: 'chaoxing'`，Dashboard 标题栏出现“已连接学习通数据源”，实际数据只是本地 JSON。
-- 处理：快照导入固定 `source: 'import'`；Dashboard、Settings、App 标题栏改为“本地快照 · 非实时同步”；`SyncStatus` 保留 `snapshot` 元数据。
-- 这是本项目最重要的产品语义修复之一：**未授权数据不冒充实时同步。**
-
-#### P17. 学习中心章节进度被旧快照覆盖
-
-- 现象：`Study.tsx` 使用 `Math.max(progress, chapter.progress)`，导致快照中的旧百分比压过用户刚勾选的学习点进度。
-- 处理：存在学习点时使用根据学习点计算的 `progress`；只有没有学习点时才显示快照章节进度。
-
-#### P18. AI Key“删除旧 Key”和“输入新 Key”同时生效
-
-- 现象：用户输入新 Key 同时勾选删除，后端先清除后保存，结果 Key 丢失。
-- 处理：前端输入新 Key 时自动取消 `clearAiKey`；保存时只在没有新 Key 的情况下传 `clearApiKey`；后端让非空新 Key 优先于 clear 标记。
-
-#### P19. AI 配置和请求的安全边界
-
-- Base URL 只接受 HTTPS；仅对 localhost 允许 HTTP，便于本地模型调试。
-- Key 通过 Electron `safeStorage` 加密，不写入日志，不进入渲染器持久化，不随题库导出。
-- 只把用户当前输入的题目发送到用户配置的接口；应用不内置共享 Key。
-- 当前限制：AI 请求的真实网络行为由用户配置决定，自动化测试只验证 URL、提示词和响应解析，没有在无 Key 环境发起真实模型调用。
-
-#### P20. `closeToTray=false` 时关闭窗口仍常驻
-
-- 现象：托盘存在时关闭窗口，进程不退出。
-- 处理：`mainWindow.on('closed')` 在 `!isQuitting` 时调用 `app.quit()`；`before-quit` 负责后续清理。
-
-#### P21. Portal 每次打开都重复注册下载拦截
-
-- 现象：`will-download` 在每次 `open` 时注册，频繁打开会增加监听器并重复触发。
-- 处理：把 `will-download` 移到 `configureSession()`，每个隔离 session 只注册一次；仍然阻止下载。
-
-#### P22. CSP 仍允许内联脚本
-
-- 现象：`index.html` 的 `script-src` 原先包含 `'unsafe-inline'`。
-- 处理：收紧为 `script-src 'self'`；`style-src` 保留 inline 以支持 React 内联样式。
-- 验证：Portal E2E 的页面探针确认 `require`、`process`、`module`、`window.studynext`、`window.electron`、`window.ipcRenderer` 全部为 `undefined`。
-
-#### P23. Portal 测试需要真实 WebContentsView，而不是 mock
-
-- 处理：测试通过 `BrowserWindow.getAllWindows()[0].contentView.children.find(child => 'webContents' in child)` 取得真实视图，加载本地 HTTPS 探针页；跳转 `https://example.com/blocked` 后断言状态为 `blocked` 且 URL 没有离开白名单。
-
-### 2.4 测试与视觉
-
-#### P24. 单元测试期望 `listChapters()` 带课程过滤
-
-- 现象：测试调用 `store.listChapters()` 后按 `courseId` 过滤，错误地假设方法本身带筛选。
-- 处理：修正测试为 `listChapters().filter(chapter => chapter.courseId === ...)`；不改变存储 API 的语义。
-
-#### P25. Playwright 选择器与实际 DOM 不一致
-
-- `.metric-note` 不存在，指标值使用 `.metric-value`。
-- 学习点只有 `.done` 状态类，没有 `.todo`；改为 `.study-point:not(.done)`。
-- 导入快照后课程出现在侧栏但没有自动选中；改为先点击“测试快照课程”再断言学习点。
-
-#### P26. 截图发白是动画时序问题
-
-- 现象：Dashboard/Settings 截图在 220 ms 的 `page-in` 动画结束前拍摄，显得发白。
-- 处理：截图前等待动画结束（约 300 ms）；不是 CSS 或渲染故障。
-
-#### P27. Portal E2E 的代理与证书问题
-
-- 见 P6、P7；这两个问题曾导致测试失败，最终通过 `--no-proxy-server` 和测试专用证书回调解决。
-
-### 2.5 打包、文档和源文件
-
-#### P28. 安装包版本、大小和哈希多次变化
-
-- 0.1.0 安装包为 106,037,349 bytes，哈希 `D643...`；0.2.0 最终包为 106,052,543 bytes，哈希 `8C409...`。
-- 处理：最终以 `release/StudyNext-Setup-0.2.0.exe` 为准；README、TEST_REPORT、DELIVERY 已统一为最终值。
-- 注意：文档修改不会改变安装包；如果以后修改源码，必须重新 `build:win` 并更新哈希。
-
-#### P29. PowerShell 批量替换导致中文源码乱码（最严重的一次事故）
-
-- 现象：一次为把快照来源改成 `import` 的 PowerShell `.Replace`/`Get-Content` 批量编辑，把 `src/main/storage/store.ts`（96 个非 ASCII 行）和 `src/main/integrations/snapshot.ts`（31 个非 ASCII 行）的中文变成 CP936 乱码，部分引号也丢失，文件语法损坏。
-- 原因：PowerShell 默认编码与 UTF-8 源文件不一致，批量文本替换没有按 UTF-8 读写。
-- 处理：
-  1. 保留损坏副本作为 `.tmp-store-corrupt.ts`；
-  2. 用 `.tmp-recovery-b38.txt` 中的原始存储读取和 15 次编辑记录，重建 `.tmp-store-rebuilt.ts`；
-  3. 用 `.tmp-snapshot-base.ts` 的原始字面量逐行修复 `snapshot.ts` 的 30 个损坏行；
-  4. 恢复课程作用域唯一索引、`source: 'import'` 和所有中文提示；
-  5. 重新运行 `typecheck`、40 项单元测试、5 个 E2E，全部通过。
-- 教训：以后修改中文 TypeScript 源码统一用 `edit` 工具或显式 UTF-8 读写；不再用 PowerShell 批量替换源文件。
-
-#### P30. 文档长期保留 0.1.0 的测试数字和哈希
-
-- 现象：源码升级到 0.2.0 后，README、TEST_REPORT、DELIVERY 仍写 32 项测试、4 个 E2E、旧哈希。
-- 处理：全部改为 8 个单测文件/40 项、5 个 E2E、0.2.0 安装包和最终哈希；`format:check`、`typecheck`、`test`、`test:e2e` 重新跑过。
-
-#### P31. 交付文档中的项目文件数不准确
-
-- 现象：DELIVERY.md 曾写“108 个项目文件”，但按排除 `node_modules`、`out`、`release`、`test-results` 和 `*.tsbuildinfo` 的口径重新统计，实际为 91 个。
-- 原因：早期统计包含了不同阶段的临时产物，后续文档没有随文件增删重新计算。
-- 处理：改为 91，并明确统计口径；新增 ISSUES.md 后同步把它列入文档清单。
-- 教训：文件数不是核心指标，但既然写进交付报告，就必须可复现；以后用一条 PowerShell 命令重新生成，不凭记忆填写。
-
-### 2.7 v0.3 真实接入与可靠性迭代新增问题
-
-#### P32. 数据目录静默回退临时目录
-
-- 现象：旧实现三级候选最后落到系统临时目录，用户重启后可能发现课程和任务“消失”。
-- 处理：新增 `user-data.ts`，只允许 LOCALAPPDATA、应用数据目录和显式 `STUDYNEXT_DATA_DIR`；全部不可写时启动错误框并退出，测试覆盖候选顺序与不可写路径。
-
-#### P33. 任务增量导入覆盖手动修改
-
-- 现象：按外部 ID 更新任务时，如果直接 UPDATE 所有字段，会覆盖用户在本地改过的标题或截止时间。
-- 处理：新增 `manualFields`/`fieldSources`/`completionSource`/`task_change_log`；`upsertImportedTask` 逐字段合并，保留手动字段并返回 `conflicts`，平台完成不覆盖本地完成。
-
-#### P34. Portal 导航日志泄露查询参数
-
-- 现象：直接保存页面 URL 会把 `?token=...` 或会话片段写进诊断日志。
-- 处理：所有 state 与导航日志只保存 `origin + pathname`，URL 带 token 的 E2E 断言已验证；导航日志最多 30 条，清空按钮可用。
-
-#### P35. 登录状态误判
-
-- 现象：旧逻辑仅凭 `passport` 或 `/login` 判断未登录，i.chaoxing.com 一律已登录，无法区分登录页和普通官方页。
-- 处理：改为 `unknown/logged_out/logged_in` 三态启发式；passport/login/cas 为登出，`i.chaoxing.com/base` 或 `/visit` 或从登出返回官方域为登录；文档明确这不是 token 校验。
-
-#### P36. 校园 SSO 与官方白名单边界
-
-- 现象：只允许学习通域名会把学校统一认证页拦截，用户无法完成部分学校登录。
-- 处理：设置增加 `trustedSsoDomains`，只接受 HTTPS、443、无 userinfo 的精确域名或子域，最多 20 个；官方入口仍只允许学习通 HTTPS 域名。导航仍由用户手动完成，不注入脚本。
-
-#### P37. Electron 版本与数据目录耦合
-
-- 现象：旧版本 38.8.6 已过期，而 Electron 45 在默认 profile 下的崩溃与 user-data-dir 权限相关。
-- 处理：升级到 45.3.0；用隔离 `--user-data-dir` 重新跑 E2E、构建和打包验证，确认不是业务代码问题。
-
-## 3. 仍然存在的限制
-
-这些不是“已经解决”的问题，而是当前版本的真实边界：
-
-1. **实时学习通接入未配置**：没有找到面向个人开发者公开可申请的 OAuth/课程接口文档；`ChaoxingAuthorizedAdapter.isConfigured()` 仍固定返回 `false`，UI 显示未配置，不以演示数据或快照冒充实时同步。
-2. **快照是手动导入**：没有定时拉取或自动更新；同一快照重复导入已支持按外部 ID 增量更新、截止时间变化检测、手动字段冲突保留，但不主动访问学习通。
-3. **退出后没有定时提醒**：主进程退出后定时器停止；重新启动会补发最近 10 分钟内错过的提醒。界面已明确说明，不声称后台常驻；`NotificationScheduler` 已抽象，Windows 计划任务仍是后续工作。
-4. **AI 真实调用取决于用户配置**：无内置共享 Key；自动化测试只覆盖 URL 校验、消息构造和响应解析；没有 OCR、截图搜题或自动提交。
-5. **安装包未代码签名**：Windows 可能显示未知发布者；这不影响本地安装，但发布前需要证书。
-6. **Electron 45 已在当前宿主验证**：E2E、生产构建、打包版均通过；干净 Windows 虚拟机仍需做发布前回归。
-7. **没有实现自动刷课、签到、考试代答、验证码绕过、反爬或监考绕过**：这是产品边界，不是未完成 bug。
-8. **没有逐行审阅四个开源仓库的全部源码**：如第 1 节所述，只做了仓库级/README/许可证/目录级调研；本项目没有复制任何第三方代码。
-9. **真实账号登录未验证**：只验证了官方页面隔离、白名单、脱敏日志和本地 HTTPS 测试证书；没有使用真实学习通账号，也不收集密码、Cookie 或 Token。
-
-## 4. 复现验证
-
-```powershell
-cd D:\Documents\deepseek-harness\default-workspace\studynext
-Remove-Item Env:ELECTRON_RUN_AS_NODE -ErrorAction SilentlyContinue
-npm run typecheck
-npm test
-npm run test:e2e
-npm run build
-npm run build:win
-```
-
-当前结果：
-
-- `npm run typecheck`：通过
-- `npm test`：9 个文件、47/47 通过
-- `npm run test:e2e`：5 个规格文件、6/6 通过
-- `npm run build`：通过
-- `npm run build:win`：通过，产物为 `release/StudyNext-Setup-0.3.0.exe`
-- 打包版启动：`title=学习总览`、`version=0.3.0`、`packaged=true`
-
-## 5. 相关文档
-
-- [参考项目与开放能力调研](./research.md)
-- [优化落地记录](./OPTIMIZATION.md)
-- [测试报告](./TEST_REPORT.md)
-- [交付报告](./DELIVERY.md)
-- [架构说明](./ARCHITECTURE.md)
+# StudyNext 已知问题与工程教训
+
+> 本文件只保留仍然有效的当前问题与可复用的工程教训。历史 checkpoint 的过程记录已移除；需要追溯时查 git 历史。当前开发状态见 [STATUS.md](STATUS.md)，测试缺口见 [TESTING.md](TESTING.md)。
+
+## 1. 当前已知问题
+
+### P0 / 发布阻断
+
+目前没有代码级 P0。发布前仍需完成真实 Windows 安装与真实学习通账号验收；在这些验收完成前，不能把 v0.5.0 描述为“已发布可用”。
+
+### P1 / 发布前必须处理
+
+| 编号 | 问题                                                      | 影响                                                | 处理方向                                                    |
+| ---- | --------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------------------- |
+| I-01 | 安装包未签名，也未接入自动更新                            | 用户安装会出现 SmartScreen 警告，升级依赖手动下载   | 发布前完成代码签名与更新策略；不要承诺自动更新              |
+| I-02 | 真实 Windows 安装/覆盖升级/卸载未验证                     | NSIS 脚本、快捷方式、数据目录在真实安装环境可能失败 | 在干净 Windows 环境逐项验收并记录到 `STATUS.md`             |
+| I-03 | Task Scheduler 定时触发、真实通知点击未验证               | 应用退出后的 DDL 提醒可能不触发或点击不激活任务     | 在已安装版本上验证注册、触发、点击、注销与重装              |
+| I-04 | 真实学习通账号全流程验收未完成                            | 页面解析、提交状态、成绩批语可能随平台改版失效      | 用用户本人账号手动验收；失败即降级并保留原因                |
+| I-05 | 部分作业无 `submittedAt`，详情未完整读取时状态为 `unread` | UI 不能显示精确提交时间，统计可能偏保守             | 保持 `unread`，不得猜测；等待平台返回或用户手动核对         |
+| I-06 | 资料分页仅部分验证，下载失败原因未持久化                  | 大量资料可能漏抓；失败只能显示“下载失败或中断”      | 增加分页回归；在 `downloads` 表增加失败原因字段后再展示细节 |
+| I-07 | 应用图标为本地生成的占位品牌图标                          | 正式发布形象不完整                                  | 发布前做视觉定稿并替换图标资源                              |
+
+### P2 / 应尽快处理
+
+| 编号 | 问题                                                                                        | 影响                                                                       |
+| ---- | ------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| I-08 | `App.tsx` 释放后的资料/考试/通知细粒度定位接线未完成                                        | 从今日页/命令面板跳转后可能只到页面，未定位到具体条目                      |
+| I-09 | N-002 资料管理两项 P2、N-004 搜索两项 P2、N-005 旧 todo 与目录完成冲突、N-007 三项非阻断 P2 | 功能可用但体验不一致，长期会积累小债                                       |
+| I-10 | 学习通页面解析依赖 DOM/HTML，平台改版会导致部分字段失败                                     | 解析器必须保持可观测、可回退；失败不得显示成功                             |
+| I-11 | `CourseWorkspace.tsx` 128 KB、`App.tsx` 1,939 行，页面状态集中                              | 后续修改冲突概率高；重构前先补测试，不要先动结构                           |
+| I-12 | 资料下载队列状态与本地文件核验存在边界情况                                                  | 队列清空、文件被手动删除、记录丢失时需要可恢复；已有单测但真实环境仍需验证 |
+
+### P3 / 工程卫生
+
+| 编号 | 问题                                                                      | 处理建议                                                      |
+| ---- | ------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| I-13 | E2E 运行会生成 `.tmp-e2e-*` 临时目录与测试 profile                        | 在 workspace 可写目录内运行并及时清理；不要用共享系统 profile |
+| I-14 | 文档索引与代码/截图路径可能随重构失效                                     | 按 AGENTS.md §11 维护；只保留长期文档，不新增过程报告         |
+| I-15 | 通知权限关闭、睡眠/唤醒、多用户/无 SID、SQLite 锁、并发无头检查未系统验证 | 逐项加入真实环境验收清单                                      |
+| I-16 | 代码签名、发布哈希与安装包版本一致性依赖手工脚本                          | 每次发布运行 `npm run verify:release` 并核对 manifest         |
+
+## 2. 工程教训
+
+以下编号保留历史来源，方便在 git 历史或旧文档中检索。每条都是“踩过坑后的结论”，不是待办。
+
+### 环境与启动
+
+- **P1 npm postinstall 被拦截**：Electron 下载脚本可能被安全策略阻断；可执行 `node node_modules/electron/install.js` 补装，仅限当前主机，不要写进项目脚本。
+- **P2 Electron 45 启动崩溃 `0xc0000005`（地址 `0x7e7090b`）**：发生在 `app.whenReady()` 之前，根因是 user-data-dir 不可写/默认 profile 问题；显式传入可写 `--user-data-dir` 可规避，不是业务代码崩溃。
+- **P3 AppData 目录 `EPERM`**：数据目录只允许 `%LOCALAPPDATA%`、应用数据目录或显式 `STUDYNEXT_DATA_DIR`；不要回退到系统临时目录，否则用户数据会“消失”。
+- **P4 `ELECTRON_RUN_AS_NODE=1`**：会让 Electron 以纯 Node 运行，GUI/E2E 启动前必须清除。
+- **P5 Chromium profile 锁（错误 5）**：每个测试/实例使用独立可写 `--user-data-dir`，并让 `STUDYNEXT_DATA_DIR` 指向同一目录。
+- **P6 系统代理 `HTTP_PROXY=http://127.0.0.1:7897`**：会破坏 `--host-resolver-rules`；E2E 仅测试环境加 `--no-proxy-server`。
+- **P7 本地 HTTPS 证书不受信任**：测试专用 `setCertificateVerifyProc(callback(0))`，绝不要在生产代码关闭证书校验。
+- **P37 Electron 45 默认 profile 崩溃与权限相关**：升级到 45.3.0 并隔离 E2E 工作区；不要用共享系统 profile。
+
+### 类型、数据与导入
+
+- **P8 `exactOptionalPropertyTypes` 报错**：用条件展开/默认值/`toTaskUpsertInput`/`toSettingsPatch` 构造对象，不要用 `undefined` 强塞可选字段。
+- **P9 课程筛选 `courseId: null`**：`null` 表示“未关联课程”，字段省略表示“全部”；用条件展开构造查询，不要混淆。
+- **P10 收藏 schema 用错 ID 字段**：固定为 `favoriteSchema = z.object({ id: z.string().uuid(), favorite: z.boolean() }).strict()`。
+- **P11 `shell.openPath` 失败静默**：包装 `UserFacingError('OPEN_DIRECTORY_FAILED', message)`，让用户看到可理解错误。
+- **P12 跨课程快照 ID 冲突**：唯一索引必须是 `(course_id, source, external_id)`，任务 externalId 要带课程前缀。
+- **P13 快照重复导入**：顶层与嵌套 homework 会重复，用 `taskKeys`/`addParsedTask` 去重。
+- **P14 `Boolean('false') === true`**：解析完成状态必须显式匹配 `true/1/yes/done/complete/completed/已完成`，不能直接 `Boolean()`。
+- **P15 进度 `1` 与 `"1%"` 歧义**：数值 0–1 视为比例，显式百分号字符串按百分比；两者不可混用。
+- **P16 快照导入冒充实时同步**：来源固定 `import`，文案必须“本地快照 · 非实时同步”，不得计为学习通同步成功。
+- **P17 章节进度被旧快照覆盖**：有学习点时按学习点计算，`Math.max()` 不能直接覆盖旧值。
+- **P33 增量导入覆盖手动修改**：保留 `manualFields`/`fieldSources`/`completionSource`/`task_change_log`；`upsertImportedTask` 合并字段，平台完成状态不得覆盖本地手动完成。
+- **P38 提交/批阅后任务状态陈旧（v0.5.0 根因）**：只监听 `/work/prompt` 会漏；`retryCourse` 在全局同步中可能返回旧状态；`isPlatformTaskDone` 曾把 `submitted/pending_review` 当本地完成。修复为 `webRequest.onCompleted` 监听 POST（排除 `saveStatus=1`）、`CHAOXING_RETRY_BUSY`、六态拆分、数据保护合并、集中自动刷新；`submittedAt` 仍可能为空，真实提交必须由用户验收。
+
+### UI、截图与可访问性
+
+- **P20 托盘关闭后进程残留**：`closeToTray=false` 时 `mainWindow.on('closed')` 要在非主动退出时 `app.quit()`。
+- **P21 `will-download` 重复注册**：Portal 每次打开都注册会叠加监听；应在 `configureSession()` 注册一次。
+- **P22 CSP 允许内联脚本**：必须 `script-src 'self'`；Portal 探针确认 `require`/`process`/`module`/`window.studynext`/`window.electron`/`window.ipcRenderer` 均为 `undefined`。
+- **P23 Portal 测试不能用 mock**：必须用真实 `WebContentsView`；被阻止的导航要保持原 URL。
+- **P24 单测假设 `listChapters()` 按课程过滤**：实际 API 不按课程过滤；修测试而不是改存储 API。
+- **P25 Playwright 选择器与 DOM 不匹配**：用 `.metric-value`、`.study-point:not(.done)`，先点课程再断言。
+- **P26 截图被 220ms `page-in` 动画洗白**：等待 ≥300ms 再截图。
+- **P27 Portal E2E 的代理/证书问题**：按 P6/P7 处理，不要在生产代码放宽校验。
+
+### 文档、发布与编码
+
+- **P28 安装包大小/哈希漂移**：0.1.0 为 106,037,349 bytes / `D643...`，0.2.0 为 106,052,543 bytes / `8C409...`；每次重建都会变化，文档必须引用实际产物。
+- **P29 CP936 乱码事故（最严重）**：PowerShell `.Replace`/`Get-Content` 默认 CP936 曾把 `src/main/storage/store.ts` 96 行、`src/main/integrations/snapshot.ts` 31 行中文破坏，引号丢失；从 `.tmp-store-corrupt.ts`/`.tmp-recovery-b38.txt`/`.tmp-store-rebuilt.ts`/`.tmp-snapshot-base.ts` 恢复。结论：中文文件只用 `edit`/显式 UTF-8，禁止 PowerShell 批量替换。
+- **P30 文档沿用旧测试数字/哈希**：升级后 README/TEST_REPORT/DELIVERY 必须同步更新；现在统一记录到 `TESTING.md` 并带日期。
+- **P31 文档夸大楼项目文件数**：DELIVERY 声称 108 个，实际 91 个（排除 node_modules/out/release/test-results/\*.tsbuildinfo）；数字要重新计算，不凭记忆。
+- **P32 数据目录静默回退临时目录**：`user-data.ts` 只允许 LOCALAPPDATA/app data/显式 env，找不到就报错退出，不能悄悄换目录。
+- **P34 Portal 导航日志泄露 query token**：只记录 `origin + pathname`，最多 30 条。
+- **P35 登录状态误判**：`unknown/logged_out/logged_in` 曾把“页面能打开”当登录；后来扩展为 `unknown/logged_out/authenticated/expired`，且不做 token 校验。
+- **P36 SSO 域名被拦截**：`trustedSsoDomains` 仅允许 HTTPS/443、无 userinfo、精确或子域名匹配、最多 20 个。
+
+## 3. 维护规则
+
+1. 新增问题先查是否已有编号；新问题用 `I-xx`（当前问题）或 `Pxx`（历史教训）记录，避免重复。
+2. 修复 P1/P2 问题后，在原条目补“已修复版本/日期”，不要直接删除。
+3. 真实环境验收结果写入 `STATUS.md`，测试基线写入 `TESTING.md`，不要在本文件堆测试日志。
+4. 发布前逐项检查 §1 的 P0/P1；未验证项不得写成“已支持”。

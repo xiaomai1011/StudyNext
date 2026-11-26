@@ -1,20 +1,20 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   BellRing,
-  BrainCircuit,
   Database,
   Download,
   Eye,
   EyeOff,
   FolderOpen,
-  Globe2,
   Import,
   KeyRound,
   Laptop,
   LockKeyhole,
+  Minus,
   Moon,
   Plus,
   RefreshCw,
+  RotateCcw,
   Save,
   ShieldCheck,
   Sun,
@@ -22,54 +22,52 @@ import {
   TriangleAlert
 } from 'lucide-react'
 import type {
-  AiConfig,
   AppInfo,
   AppSettings,
   BootstrapData,
   ChaoxingCredentialStatus,
   ChaoxingSessionStatus,
   ImportResult,
-  OfficialEntry,
-  OfficialEntryInput,
   PortalSecurityState,
   SnapshotImportResult,
   SyncProgressEvent,
   SyncStatus,
   ThemeMode
 } from '@shared/types'
-import { REMINDER_MAX_MINUTES, REMINDER_MIN_MINUTES, REMINDER_PRESETS } from '@shared/constants'
-import { normalizeReminderOffsets } from '@shared/domain'
+import {
+  REMINDER_MAX_MINUTES,
+  REMINDER_MIN_MINUTES,
+  REMINDER_PRESETS,
+  UI_ZOOM_MAX,
+  UI_ZOOM_MIN,
+  UI_ZOOM_PRESETS,
+  UI_ZOOM_STEP
+} from '@shared/constants'
+import { isSyncStale, normalizeReminderOffsets } from '@shared/domain'
 import type { ToastKind } from '../components/ToastStack'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { errorMessage, formatOptionalDateTime, reminderOffsetLabel } from '../lib/format'
+import { PageHeader } from '../ui/primitives'
+import { SETTINGS_SECTION_IDS, type SettingsSectionId } from '@shared/settings-scroll-spy'
+import type { ManualSyncResult, SyncRunResult } from '@shared/sync-controller'
+import { ensureActiveNavVisible } from './settings/active-nav-visibility'
+import { useSettingsScrollSpy } from './settings/use-settings-scroll-spy'
 
 interface SettingsProps {
   settings: AppSettings
   syncStatus: SyncStatus
   chaoxing: ChaoxingSessionStatus
-  entries: OfficialEntry[]
   appInfo: AppInfo
   reminderRuntime: BootstrapData['reminderRuntime']
   onUpdateSettings: (patch: Partial<AppSettings>) => Promise<void>
   onResetDemo: () => Promise<void>
-  onCreateEntry: (input: OfficialEntryInput) => Promise<void>
-  onToggleEntry: (entry: OfficialEntry, enabled: boolean) => Promise<void>
-  onRemoveEntry: (entry: OfficialEntry) => Promise<void>
-  onSyncRun: () => Promise<SyncStatus>
+  onSyncRun: () => Promise<SyncRunResult>
   onChaoxingCheck: () => Promise<ChaoxingSessionStatus>
-  onChaoxingSync: (force?: boolean) => Promise<ChaoxingSessionStatus>
+  onChaoxingSync: (force?: boolean) => Promise<ManualSyncResult>
+  onCancelSync?: () => Promise<boolean>
+  onSessionCleared?: () => Promise<void> | void
   onImported: () => Promise<void>
   notify: (kind: ToastKind, message: string) => void
-}
-
-const ENTRY_KIND_LABEL: Record<OfficialEntry['kind'], string> = {
-  home: '首页',
-  course: '课程',
-  task: '作业',
-  exam: '考试',
-  notice: '通知',
-  calendar: '课表',
-  custom: '自定义'
 }
 
 const SYNC_STATE_LABEL: Record<SyncStatus['state'], string> = {
@@ -101,6 +99,31 @@ function authStateColor(state: ChaoxingSessionStatus['authState']): string {
   return 'var(--text-faint)'
 }
 
+const SETTINGS_NAV_GROUPS: Array<{
+  label: string
+  items: Array<{ id: SettingsSectionId; label: string; icon: typeof Sun }>
+}> = [
+  {
+    label: '偏好',
+    items: [
+      { id: 'settings-appearance', label: '外观', icon: Sun },
+      { id: 'settings-behavior', label: '应用行为', icon: Laptop },
+      { id: 'settings-reminders', label: 'DDL 提醒', icon: BellRing }
+    ]
+  },
+  {
+    label: '连接',
+    items: [{ id: 'settings-portal', label: '学习通与同步', icon: RefreshCw }]
+  },
+  {
+    label: '数据',
+    items: [
+      { id: 'settings-import', label: '手动导入', icon: Import },
+      { id: 'settings-about', label: '数据与关于', icon: Database }
+    ]
+  }
+]
+
 function snapshotSyncStateLabel(state: SyncStatus['state']): string {
   return SNAPSHOT_SYNC_STATE_LABEL[state]
 }
@@ -109,17 +132,15 @@ export function Settings({
   settings,
   syncStatus,
   chaoxing,
-  entries,
   appInfo,
   reminderRuntime,
   onUpdateSettings,
   onResetDemo,
-  onCreateEntry,
-  onToggleEntry,
-  onRemoveEntry,
   onSyncRun,
   onChaoxingCheck,
   onChaoxingSync,
+  onCancelSync,
+  onSessionCleared,
   onImported,
   notify
 }: SettingsProps) {
@@ -128,20 +149,12 @@ export function Settings({
   const [importResult, setImportResult] = useState<ImportResult | null>(null)
   const [snapshotImporting, setSnapshotImporting] = useState(false)
   const [snapshotResult, setSnapshotResult] = useState<SnapshotImportResult | null>(null)
-  const [aiConfig, setAiConfig] = useState<AiConfig | null>(null)
-  const [aiEnabled, setAiEnabled] = useState(false)
-  const [aiBaseUrl, setAiBaseUrl] = useState('https://api.openai.com/v1')
-  const [aiModel, setAiModel] = useState('gpt-4o-mini')
-  const [aiKey, setAiKey] = useState('')
-  const [clearAiKey, setClearAiKey] = useState(false)
-  const [aiSaving, setAiSaving] = useState(false)
   const [confirm, setConfirm] = useState<'reset' | 'clear' | null>(null)
   const [busy, setBusy] = useState(false)
   const [syncingChaoxing, setSyncingChaoxing] = useState(false)
   const [syncProgress, setSyncProgress] = useState<SyncProgressEvent | null>(null)
-  const [entryLabel, setEntryLabel] = useState('')
-  const [entryUrl, setEntryUrl] = useState('')
-  const [entryKind, setEntryKind] = useState<OfficialEntry['kind']>('custom')
+  const [systemReminderStatus, setSystemReminderStatus] = useState(reminderRuntime.system)
+  const [systemReminderBusy, setSystemReminderBusy] = useState(false)
   const [ssoDomainsText, setSsoDomainsText] = useState(settings.trustedSsoDomains.join('\n'))
   const [ssoSaving, setSsoSaving] = useState(false)
   const [credential, setCredential] = useState<ChaoxingCredentialStatus | null>(null)
@@ -151,6 +164,25 @@ export function Settings({
   const [showCredentialPassword, setShowCredentialPassword] = useState(false)
   const fileInput = useRef<HTMLInputElement | null>(null)
   const snapshotInput = useRef<HTMLInputElement | null>(null)
+  const navRef = useRef<HTMLElement | null>(null)
+  const { activeId, scrollToSection } = useSettingsScrollSpy({
+    sectionIds: SETTINGS_SECTION_IDS,
+    navRef
+  })
+
+  useEffect(() => {
+    const nav = navRef.current
+    if (!nav) return
+
+    ensureActiveNavVisible(nav, activeId)
+    // A width change can switch the rail between vertical and horizontal
+    // layouts without changing activeId, so watch the nav itself as well.
+    const observer = new ResizeObserver(() => {
+      ensureActiveNavVisible(nav, activeId)
+    })
+    observer.observe(nav)
+    return () => observer.disconnect()
+  }, [activeId])
 
   useEffect(() => {
     let alive = true
@@ -158,16 +190,6 @@ export function Settings({
       .securityState()
       .then((next) => {
         if (alive) setSecurity(next)
-      })
-      .catch(() => undefined)
-    void window.studynext.ai
-      .getConfig()
-      .then((config) => {
-        if (!alive) return
-        setAiConfig(config)
-        setAiEnabled(config.enabled)
-        setAiBaseUrl(config.baseUrl)
-        setAiModel(config.model)
       })
       .catch(() => undefined)
     void window.studynext.chaoxing
@@ -196,12 +218,32 @@ export function Settings({
     setSsoDomainsText(settings.trustedSsoDomains.join('\n'))
   }, [settings.trustedSsoDomains])
 
+  useEffect(() => {
+    setSystemReminderStatus(reminderRuntime.system)
+  }, [reminderRuntime.system])
+
   const update = async (patch: Partial<AppSettings>, message?: string): Promise<void> => {
     try {
       await onUpdateSettings(patch)
       if (message) notify('success', message)
     } catch (error) {
       notify('error', errorMessage(error))
+    }
+  }
+
+  const repairSystemReminder = async (): Promise<void> => {
+    setSystemReminderBusy(true)
+    try {
+      const status = await window.studynext.notifications.repairSystemTask()
+      setSystemReminderStatus(status)
+      notify(
+        'success',
+        status.registered ? 'Windows 系统级提醒任务已重新注册' : '系统级提醒任务已更新'
+      )
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setSystemReminderBusy(false)
     }
   }
 
@@ -262,48 +304,6 @@ export function Settings({
     }
   }
 
-  const saveAiConfig = async (): Promise<void> => {
-    setAiSaving(true)
-    try {
-      const config = await window.studynext.ai.updateConfig({
-        enabled: aiEnabled,
-        baseUrl: aiBaseUrl,
-        model: aiModel,
-        ...(aiKey.trim() ? { apiKey: aiKey.trim() } : {}),
-        ...(aiKey.trim() ? {} : { clearApiKey: clearAiKey })
-      })
-      setAiConfig(config)
-      setAiKey('')
-      setClearAiKey(false)
-      notify('success', 'AI 助手配置已保存')
-    } catch (error) {
-      notify('error', errorMessage(error))
-    } finally {
-      setAiSaving(false)
-    }
-  }
-
-  const addEntry = async (): Promise<void> => {
-    if (!entryLabel.trim() || !entryUrl.trim()) {
-      notify('error', '请填写入口名称和官方 URL')
-      return
-    }
-    try {
-      await onCreateEntry({
-        label: entryLabel.trim(),
-        description: '用户添加的官方入口',
-        url: entryUrl.trim(),
-        kind: entryKind
-      })
-      setEntryLabel('')
-      setEntryUrl('')
-      setEntryKind('custom')
-      notify('success', '官方入口已添加')
-    } catch (error) {
-      notify('error', errorMessage(error))
-    }
-  }
-
   const runReset = async (): Promise<void> => {
     setBusy(true)
     try {
@@ -321,6 +321,7 @@ export function Settings({
     setBusy(true)
     try {
       await window.studynext.portal.clearSession()
+      await onSessionCleared?.()
       notify('success', '学习通隔离会话中的 Cookie 与缓存已清除')
       setConfirm(null)
     } catch (error) {
@@ -332,21 +333,15 @@ export function Settings({
 
   const runSync = async (): Promise<void> => {
     setBusy(true)
+    setSyncingChaoxing(true)
     try {
-      const status = await onSyncRun()
-      if (status.state === 'not_configured') {
-        notify('info', '学习通授权数据源尚未配置，未执行同步。')
-      } else if (status.state === 'failure') {
-        notify('error', status.message)
-      } else if (status.state === 'partial') {
-        notify('info', status.message)
-      } else {
-        notify('success', status.message)
-      }
+      const result = await onSyncRun()
+      notify(result.toastKind, result.message)
     } catch (error) {
       notify('error', errorMessage(error))
     } finally {
       setBusy(false)
+      setSyncingChaoxing(false)
     }
   }
 
@@ -355,7 +350,10 @@ export function Settings({
     try {
       const status = await onChaoxingCheck()
       if (status.authState === 'authenticated') {
-        notify('success', `已确认学习通登录态${status.displayName ? `：${status.displayName}` : ''}`)
+        notify(
+          'success',
+          `已确认学习通登录态${status.displayName ? `：${status.displayName}` : ''}`
+        )
       } else if (status.authState === 'expired') {
         notify('info', '学习通登录态已过期，请在 Portal 中重新登录。')
       } else if (status.authState === 'logged_out') {
@@ -373,14 +371,9 @@ export function Settings({
   const syncChaoxing = async (): Promise<void> => {
     setBusy(true)
     setSyncingChaoxing(true)
-    setSyncProgress({ phase: 'start', message: '准备同步…', current: 0, total: 0 })
     try {
-      const status = await onChaoxingSync(true)
-      if (status.authState === 'authenticated') {
-        notify('success', status.message)
-      } else {
-        notify('info', status.message)
-      }
+      const result = await onChaoxingSync(true)
+      notify(result.toastKind, result.message)
     } catch (error) {
       notify('error', errorMessage(error))
     } finally {
@@ -391,8 +384,12 @@ export function Settings({
 
   const cancelChaoxingSync = async (): Promise<void> => {
     try {
-      await window.studynext.chaoxing.cancel()
-      notify('info', '已请求取消同步，正在等待当前请求结束。')
+      if (onCancelSync) {
+        await onCancelSync()
+      } else {
+        await window.studynext.chaoxing.cancel()
+        notify('info', '正在请求取消当前同步…')
+      }
     } catch (error) {
       notify('error', errorMessage(error))
     }
@@ -459,6 +456,37 @@ export function Settings({
     }
   }
 
+  const activateCredentialAccount = async (id: string): Promise<void> => {
+    setCredentialBusy(true)
+    try {
+      const status = await window.studynext.chaoxing.switchAccount(id)
+      setCredential(status)
+      const result = await window.studynext.chaoxing.autoLogin()
+      if (result.ok) {
+        notify('success', '已切换账号并自动登录成功。')
+      } else {
+        notify('info', `账号已切换，自动登录未完成：${result.message}`)
+      }
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setCredentialBusy(false)
+    }
+  }
+
+  const removeCredentialAccount = async (id: string): Promise<void> => {
+    setCredentialBusy(true)
+    try {
+      const status = await window.studynext.chaoxing.removeAccount(id)
+      setCredential(status)
+      notify('success', '已从本机删除该学习通账号。')
+    } catch (error) {
+      notify('error', errorMessage(error))
+    } finally {
+      setCredentialBusy(false)
+    }
+  }
+
   const saveSsoDomains = async (): Promise<void> => {
     const domains = [
       ...new Set(
@@ -480,83 +508,47 @@ export function Settings({
   }
 
   return (
-    <div className="page settings-page">
-      <header className="page-header">
-        <div className="page-header-copy">
-          <div className="eyebrow">
-            <Laptop size={12} /> 设置
-          </div>
-          <h1 className="page-title">偏好与数据</h1>
-          <p className="page-subtitle">
-            控制外观、通知、提醒规则和学习通兼容层。所有设置保存在本机。
-          </p>
-        </div>
-      </header>
+    <div className="page settings-page ds-settings-page">
+      <PageHeader
+        title="偏好与数据"
+        subtitle="控制外观、通知、提醒规则、学习通账号与本地数据。所有设置保存在本机。"
+      />
 
       <div className="settings-layout">
-        <nav className="card settings-nav">
-          <button
-            type="button"
-            onClick={() =>
-              document.getElementById('settings-appearance')?.scrollIntoView({ behavior: 'smooth' })
-            }
-          >
-            外观
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              document.getElementById('settings-behavior')?.scrollIntoView({ behavior: 'smooth' })
-            }
-          >
-            行为
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              document.getElementById('settings-reminders')?.scrollIntoView({ behavior: 'smooth' })
-            }
-          >
-            提醒
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              document.getElementById('settings-portal')?.scrollIntoView({ behavior: 'smooth' })
-            }
-          >
-            学习通
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              document.getElementById('settings-ai')?.scrollIntoView({ behavior: 'smooth' })
-            }
-          >
-            AI 助手
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              document.getElementById('settings-import')?.scrollIntoView({ behavior: 'smooth' })
-            }
-          >
-            导入
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              document.getElementById('settings-about')?.scrollIntoView({ behavior: 'smooth' })
-            }
-          >
-            数据
-          </button>
+        <nav ref={navRef} className="settings-nav" aria-label="设置分区">
+          {SETTINGS_NAV_GROUPS.map((group) => (
+            <div key={group.label} className="settings-nav-group">
+              <div className="settings-nav-label">{group.label}</div>
+              {group.items.map((item) => {
+                const Icon = item.icon
+                const active = activeId === item.id
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={active ? 'settings-nav-item active' : 'settings-nav-item'}
+                    aria-controls={item.id}
+                    aria-current={active ? 'location' : undefined}
+                    data-settings-nav={item.id}
+                    onClick={() => scrollToSection(item.id)}
+                  >
+                    <Icon size={15} strokeWidth={1.7} aria-hidden="true" />
+                    <span>{item.label}</span>
+                  </button>
+                )
+              })}
+            </div>
+          ))}
         </nav>
 
-        <div>
-          <section className="card settings-section" id="settings-appearance">
+        <div className="settings-content">
+          <section
+            className="settings-section"
+            id="settings-appearance"
+            aria-labelledby="settings-appearance-title"
+          >
             <div className="settings-section-head">
-              <h3>外观</h3>
+              <h2 id="settings-appearance-title">外观</h2>
               <p>主题会立即应用；跟随系统会随 Windows 深浅色设置切换。</p>
             </div>
             <div className="settings-rows">
@@ -583,22 +575,96 @@ export function Settings({
                       }
                       onClick={() => void update({ theme: value })}
                     >
-                      <span
-                        className={value === 'system' ? 'theme-swatch' : `theme-swatch ${value}`}
-                      />
-                      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-                        <Icon size={11} /> {label}
+                      <span className="theme-option-label">
+                        <Icon size={13} aria-hidden="true" />
+                        <span>{label}</span>
                       </span>
                     </button>
                   ))}
                 </div>
               </div>
+
+              <div className="setting-row setting-row-zoom">
+                <div className="setting-copy">
+                  <div className="setting-label">界面缩放比例</div>
+                  <div className="setting-desc">
+                    自由调节全局界面大小，高分屏推荐 85%–95%。支持 Ctrl + / Ctrl - / Ctrl 0
+                    快捷缩放。
+                  </div>
+                </div>
+                <div className="zoom-setting-controls">
+                  <div className="zoom-stepper" role="group" aria-label="微调界面缩放">
+                    <button
+                      type="button"
+                      className="zoom-step-btn"
+                      aria-label="缩小界面"
+                      disabled={settings.uiZoom <= UI_ZOOM_MIN + 0.001}
+                      onClick={() => {
+                        const next = Math.max(
+                          UI_ZOOM_MIN,
+                          Math.round((settings.uiZoom - UI_ZOOM_STEP) * 100) / 100
+                        )
+                        void update({ uiZoom: next })
+                      }}
+                    >
+                      <Minus size={12} />
+                    </button>
+                    <span className="zoom-readout">{Math.round(settings.uiZoom * 100)}%</span>
+                    <button
+                      type="button"
+                      className="zoom-step-btn"
+                      aria-label="放大界面"
+                      disabled={settings.uiZoom >= UI_ZOOM_MAX - 0.001}
+                      onClick={() => {
+                        const next = Math.min(
+                          UI_ZOOM_MAX,
+                          Math.round((settings.uiZoom + UI_ZOOM_STEP) * 100) / 100
+                        )
+                        void update({ uiZoom: next })
+                      }}
+                    >
+                      <Plus size={12} />
+                    </button>
+                    <button
+                      type="button"
+                      className="zoom-reset-btn"
+                      aria-label="重置缩放为 100%"
+                      title="重置为 100%"
+                      disabled={Math.abs(settings.uiZoom - 1) < 0.005}
+                      onClick={() => void update({ uiZoom: 1 })}
+                    >
+                      <RotateCcw size={11} />
+                      重置
+                    </button>
+                  </div>
+                  <div className="zoom-presets" role="group" aria-label="选择界面缩放预设">
+                    {UI_ZOOM_PRESETS.map((preset) => {
+                      const active = Math.abs(settings.uiZoom - preset) < 0.005
+                      return (
+                        <button
+                          key={preset}
+                          type="button"
+                          className={active ? 'zoom-preset-btn active' : 'zoom-preset-btn'}
+                          aria-pressed={active}
+                          onClick={() => void update({ uiZoom: preset })}
+                        >
+                          {Math.round(preset * 100)}%
+                        </button>
+                      )
+                    })}
+                  </div>
+                </div>
+              </div>
             </div>
           </section>
 
-          <section className="card settings-section" id="settings-behavior">
+          <section
+            className="settings-section"
+            id="settings-behavior"
+            aria-labelledby="settings-behavior-title"
+          >
             <div className="settings-section-head">
-              <h3>应用行为</h3>
+              <h2 id="settings-behavior-title">应用行为</h2>
               <p>控制关闭窗口、开机启动和提示方式。</p>
             </div>
             <div className="settings-rows">
@@ -685,9 +751,13 @@ export function Settings({
             </div>
           </section>
 
-          <section className="card settings-section" id="settings-reminders">
+          <section
+            className="settings-section"
+            id="settings-reminders"
+            aria-labelledby="settings-reminders-title"
+          >
             <div className="settings-section-head">
-              <h3>DDL 提醒</h3>
+              <h2 id="settings-reminders-title">DDL 提醒</h2>
               <p>新建任务时默认勾选这些提前量；每个任务仍可单独调整。</p>
             </div>
             <div className="settings-rows">
@@ -742,21 +812,68 @@ export function Settings({
                   <BellRing size={13} /> 发送测试通知
                 </button>
               </div>
+              <div className="setting-row setting-row-stack">
+                <div className="setting-copy">
+                  <div className="setting-label">Windows 系统级提醒</div>
+                  <div className="setting-desc">
+                    {!settings.notificationsEnabled
+                      ? '系统通知已关闭，不会注册 Windows 检查任务。'
+                      : !systemReminderStatus.supported
+                        ? '当前运行环境不支持系统级任务；打包后的 Windows 版本会启用。'
+                        : systemReminderStatus.registered
+                          ? `已注册计划任务：${systemReminderStatus.taskName ?? 'Windows 任务'}。`
+                          : '计划任务尚未注册，应用完全退出后可能无法提醒。'}
+                    {systemReminderStatus.nextRunAt
+                      ? ` 下一次 Windows 检查：${formatOptionalDateTime(systemReminderStatus.nextRunAt)}。`
+                      : ''}
+                    {systemReminderStatus.lastCheckAt
+                      ? ` 最近检查：${formatOptionalDateTime(systemReminderStatus.lastCheckAt)}。`
+                      : ''}
+                    {systemReminderStatus.lastDeliveryError
+                      ? ` 通知发送失败：${systemReminderStatus.lastDeliveryError}`
+                      : ''}
+                    {systemReminderStatus.lastScheduleError
+                      ? ` 计划任务错误：${systemReminderStatus.lastScheduleError}`
+                      : ''}
+                    {!systemReminderStatus.lastDeliveryError &&
+                    !systemReminderStatus.lastScheduleError &&
+                    systemReminderStatus.lastError
+                      ? ` 最近错误：${systemReminderStatus.lastError}`
+                      : ''}
+                  </div>
+                  <div className="settings-inline-note">
+                    计划任务注册成功只代表 Windows 已接受任务，不代表通知已经实际送达。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn small"
+                  disabled={systemReminderBusy || !systemReminderStatus.supported}
+                  onClick={() => void repairSystemReminder()}
+                >
+                  <RefreshCw size={13} /> {systemReminderBusy ? '正在注册…' : '重新注册'}
+                </button>
+              </div>
               <div className="setting-row">
                 <div className="setting-copy">
                   <div className="setting-label">提醒时间范围</div>
                   <div className="setting-desc">
                     支持提前 {REMINDER_MIN_MINUTES} 分钟至 {Math.round(REMINDER_MAX_MINUTES / 1440)}{' '}
-                    天。应用完全退出后不会发送提醒， 重新打开时会补发最近 10 分钟内错过的项目。
+                    天。启用系统级提醒后，完全退出应用仍可由 Windows
+                    任务计划程序检查；应用重启时会补发最近 10 分钟内错过的项目。
                   </div>
                 </div>
               </div>
             </div>
           </section>
 
-          <section className="card settings-section" id="settings-portal">
+          <section
+            className="settings-section"
+            id="settings-portal"
+            aria-labelledby="settings-portal-title"
+          >
             <div className="settings-section-head">
-              <h3>学习通与同步</h3>
+              <h2 id="settings-portal-title">学习通与同步</h2>
               <p>官方页面在隔离视图中运行；登录后可在本页检查状态并手动同步课程与作业。</p>
             </div>
             <div className="settings-rows">
@@ -806,6 +923,18 @@ export function Settings({
                     <span>已同步作业</span>
                     <strong>{chaoxing.syncedTasks}</strong>
                   </div>
+                  <div>
+                    <span>数据新鲜度</span>
+                    <strong>
+                      {!chaoxing.lastSyncAt
+                        ? '尚未同步'
+                        : settings.autoRefreshMinutes === 0
+                          ? '自动刷新已关闭'
+                          : isSyncStale(chaoxing.lastSyncAt, settings.autoRefreshMinutes)
+                            ? '数据已过期'
+                            : '数据新鲜'}
+                    </strong>
+                  </div>
                 </div>
                 {chaoxing.lastSyncAt ? (
                   <div className="setting-desc" style={{ marginTop: 8 }}>
@@ -836,13 +965,17 @@ export function Settings({
                     <RefreshCw size={13} /> 仅同步学习通
                   </button>
                   {syncingChaoxing ? (
-                    <button type="button" className="btn small" onClick={() => void cancelChaoxingSync()}>
+                    <button
+                      type="button"
+                      className="btn small"
+                      onClick={() => void cancelChaoxingSync()}
+                    >
                       取消同步
                     </button>
                   ) : null}
                 </div>
                 <div className="setting-desc" style={{ marginTop: 8 }}>
-                  同步会切换官方页面（课程、通知、资料等）读取数据，结束后停留在最后读取的页面；应用不会自动返回原页面。
+                  同步会短暂切换官方页面读取数据；结束后会尝试恢复同步前的页面。如果同步期间你主动操作了页面，应用不会覆盖你的操作。
                 </div>
                 {syncProgress ? (
                   <div className="chaoxing-progress">
@@ -856,13 +989,39 @@ export function Settings({
                 ) : null}
                 <div className="setting-row">
                   <div className="setting-copy">
+                    <div className="setting-label">自动刷新</div>
+                    <div className="setting-desc">
+                      前台运行时按间隔检查学习通数据；从后台恢复或启动时也会检查一次。设为关闭后仍可手动同步。
+                    </div>
+                  </div>
+                  <select
+                    className="select"
+                    value={settings.autoRefreshMinutes}
+                    onChange={(event) =>
+                      void onUpdateSettings({ autoRefreshMinutes: Number(event.target.value) })
+                    }
+                    aria-label="自动刷新间隔"
+                  >
+                    <option value={0}>关闭</option>
+                    <option value={3}>每 3 分钟</option>
+                    <option value={5}>每 5 分钟</option>
+                    <option value={10}>每 10 分钟</option>
+                    <option value={15}>每 15 分钟</option>
+                  </select>
+                </div>
+                <div className="setting-row">
+                  <div className="setting-copy">
                     <div className="setting-label">资料下载目录</div>
                     <div className="setting-desc">
                       {settings.downloadDirectory || '默认保存在系统下载目录下的 StudyNext 文件夹'}
                     </div>
                   </div>
                   <div className="chaoxing-actions">
-                    <button type="button" className="btn small" onClick={() => void chooseDownloadDirectory()}>
+                    <button
+                      type="button"
+                      className="btn small"
+                      onClick={() => void chooseDownloadDirectory()}
+                    >
                       <FolderOpen size={13} /> 选择目录
                     </button>
                     {settings.downloadDirectory ? (
@@ -881,81 +1040,116 @@ export function Settings({
                     <div>
                       <div className="setting-label">记住账号密码</div>
                       <div className="setting-desc">
-                        使用 Windows DPAPI 加密保存在本机，仅用于官方登录页自动填充；不会上传，也不会写入日志或导出文件。
+                        使用 Windows DPAPI
+                        加密保存在本机，仅用于官方登录页自动填充；不会上传，也不会写入日志或导出文件。可保存多个账号。
                       </div>
                     </div>
-                    {credential?.saved ? (
-                      <span className="chaoxing-badge">已加密保存</span>
+                    {credential && credential.accounts.length > 0 ? (
+                      <span className="chaoxing-badge">{credential.accounts.length} 个账号</span>
                     ) : null}
                   </div>
-                  {credential?.saved ? (
-                    <div className="chaoxing-credential-saved">
-                      <span>
-                        账号：<strong>{credential.username}</strong>
-                      </span>
-                      <div className="chaoxing-actions">
-                        <button
-                          type="button"
-                          className="btn small"
-                          onClick={() => void fillCredentials()}
-                          disabled={credentialBusy}
+                  {credential && credential.accounts.length > 0 ? (
+                    <div className="chaoxing-account-list">
+                      {credential.accounts.map((account) => (
+                        <div
+                          className={
+                            account.id === credential.activeAccountId
+                              ? 'chaoxing-account-row active'
+                              : 'chaoxing-account-row'
+                          }
+                          key={account.id}
                         >
-                          <KeyRound size={13} /> 填充登录页
-                        </button>
-                        <button
-                          type="button"
-                          className="btn small"
-                          onClick={() => void clearCredentials()}
-                          disabled={credentialBusy}
-                        >
-                          <Trash2 size={13} /> 清除
-                        </button>
-                      </div>
+                          <div className="chaoxing-account-info">
+                            <strong>{account.displayName || account.username}</strong>
+                            <span>{account.username}</span>
+                            {account.school ? <small>{account.school}</small> : null}
+                          </div>
+                          <div className="chaoxing-account-actions">
+                            {account.id === credential.activeAccountId ? (
+                              <span className="chaoxing-badge">当前</span>
+                            ) : (
+                              <button
+                                type="button"
+                                className="btn small"
+                                onClick={() => void activateCredentialAccount(account.id)}
+                                disabled={credentialBusy}
+                              >
+                                使用
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="btn small danger-link"
+                              onClick={() => void removeCredentialAccount(account.id)}
+                              disabled={credentialBusy}
+                            >
+                              删除
+                            </button>
+                          </div>
+                        </div>
+                      ))}
                     </div>
-                  ) : (
-                    <form
-                      className="chaoxing-credential-form"
-                      onSubmit={(event) => void saveCredentials(event)}
-                    >
+                  ) : null}
+                  <form
+                    className="chaoxing-credential-form"
+                    onSubmit={(event) => void saveCredentials(event)}
+                  >
+                    <input
+                      type="text"
+                      value={credentialUser}
+                      onChange={(event) => setCredentialUser(event.target.value)}
+                      placeholder="学习通账号（手机号或邮箱）"
+                      autoComplete="username"
+                      disabled={credentialBusy}
+                    />
+                    <div className="password-field">
                       <input
-                        type="text"
-                        value={credentialUser}
-                        onChange={(event) => setCredentialUser(event.target.value)}
-                        placeholder="学习通账号（手机号或邮箱）"
-                        autoComplete="username"
+                        type={showCredentialPassword ? 'text' : 'password'}
+                        value={credentialPassword}
+                        onChange={(event) => setCredentialPassword(event.target.value)}
+                        placeholder="密码"
+                        autoComplete="current-password"
                         disabled={credentialBusy}
                       />
-                      <div className="password-field">
-                        <input
-                          type={showCredentialPassword ? 'text' : 'password'}
-                          value={credentialPassword}
-                          onChange={(event) => setCredentialPassword(event.target.value)}
-                          placeholder="密码"
-                          autoComplete="current-password"
-                          disabled={credentialBusy}
-                        />
-                        <button
-                          type="button"
-                          className="password-toggle"
-                          onClick={() => setShowCredentialPassword((visible) => !visible)}
-                          aria-label={showCredentialPassword ? '隐藏密码' : '显示密码'}
-                          title={showCredentialPassword ? '隐藏密码' : '显示密码'}
-                          disabled={credentialBusy}
-                        >
-                          {showCredentialPassword ? <EyeOff size={15} /> : <Eye size={15} />}
-                        </button>
-                      </div>
                       <button
-                        type="submit"
-                        className="btn small"
-                        disabled={
-                          credentialBusy || !credentialUser.trim() || !credentialPassword
-                        }
+                        type="button"
+                        className="password-toggle"
+                        onClick={() => setShowCredentialPassword((visible) => !visible)}
+                        aria-label={showCredentialPassword ? '隐藏密码' : '显示密码'}
+                        title={showCredentialPassword ? '隐藏密码' : '显示密码'}
+                        disabled={credentialBusy}
                       >
-                        <Save size={13} /> 保存
+                        {showCredentialPassword ? <EyeOff size={15} /> : <Eye size={15} />}
                       </button>
-                    </form>
-                  )}
+                    </div>
+                    <button
+                      type="submit"
+                      className="btn small"
+                      disabled={credentialBusy || !credentialUser.trim() || !credentialPassword}
+                    >
+                      <Save size={13} /> {credential?.accounts.length ? '添加账号' : '保存'}
+                    </button>
+                  </form>
+                  {credential && credential.accounts.length > 0 ? (
+                    <div className="chaoxing-actions">
+                      <button
+                        type="button"
+                        className="btn small"
+                        onClick={() => void fillCredentials()}
+                        disabled={credentialBusy}
+                      >
+                        <KeyRound size={13} /> 填充当前登录页
+                      </button>
+                      <button
+                        type="button"
+                        className="btn small danger-link"
+                        onClick={() => void clearCredentials()}
+                        disabled={credentialBusy}
+                      >
+                        <Trash2 size={13} /> 清除全部账号
+                      </button>
+                    </div>
+                  ) : null}
                   {credential && !credential.encryptionAvailable ? (
                     <div className="setting-desc">当前系统未提供 DPAPI 加密，账号不会被保存。</div>
                   ) : null}
@@ -995,103 +1189,17 @@ export function Settings({
                   >
                     <RefreshCw size={13} /> 检查同步
                   </button>
-                </div>
-              ) : null}
-
-              <div style={{ marginTop: 14 }}>
-                <div className="setting-label" style={{ marginBottom: 7 }}>
-                  官方入口管理
-                </div>
-                {entries.map((entry) => (
-                  <div className="entry-row" key={entry.id}>
-                    <span className="portal-entry-icon" style={{ width: 28, height: 28 }}>
-                      <Globe2 size={13} />
-                    </span>
-                    <div className="entry-main">
-                      <div className="entry-label">
-                        {entry.label}{' '}
-                        <span style={{ color: 'var(--text-faint)', fontWeight: 400 }}>
-                          · {ENTRY_KIND_LABEL[entry.kind]}
-                        </span>
-                      </div>
-                      <div className="entry-url">{entry.url}</div>
-                    </div>
+                  {syncingChaoxing ? (
                     <button
                       type="button"
-                      className={entry.enabled ? 'switch on' : 'switch'}
-                      aria-label={entry.enabled ? '禁用入口' : '启用入口'}
-                      onClick={() => {
-                        void onToggleEntry(entry, !entry.enabled).catch((error: unknown) =>
-                          notify('error', errorMessage(error))
-                        )
-                      }}
-                    />
-                    {entry.isBuiltin ? (
-                      <span style={{ width: 27, color: 'var(--text-faint)', fontSize: 9 }}>
-                        内置
-                      </span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="task-row-action danger"
-                        aria-label="删除入口"
-                        onClick={() => {
-                          void onRemoveEntry(entry)
-                            .then(() => notify('success', '入口已删除'))
-                            .catch((error: unknown) => notify('error', errorMessage(error)))
-                        }}
-                      >
-                        <Trash2 />
-                      </button>
-                    )}
-                  </div>
-                ))}
-              </div>
-
-              <div
-                className="import-zone"
-                style={{ marginTop: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}
-              >
-                <Globe2 />
-                <div className="import-copy">
-                  <div className="import-title">添加官方入口</div>
-                  <div className="import-desc">
-                    仅接受 https 且属于 chaoxing.com / xuexitong.com 的地址。
-                  </div>
+                      className="btn small"
+                      onClick={() => void cancelChaoxingSync()}
+                    >
+                      取消同步
+                    </button>
+                  ) : null}
                 </div>
-                <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', width: '100%' }}>
-                  <input
-                    className="input"
-                    style={{ flex: '0 1 160px' }}
-                    placeholder="入口名称"
-                    value={entryLabel}
-                    onChange={(event) => setEntryLabel(event.target.value)}
-                  />
-                  <input
-                    className="input"
-                    style={{ flex: '1 1 240px' }}
-                    placeholder="https://…"
-                    value={entryUrl}
-                    onChange={(event) => setEntryUrl(event.target.value)}
-                  />
-                  <select
-                    className="select"
-                    value={entryKind}
-                    onChange={(event) => setEntryKind(event.target.value as OfficialEntry['kind'])}
-                  >
-                    {(
-                      Object.entries(ENTRY_KIND_LABEL) as Array<[OfficialEntry['kind'], string]>
-                    ).map(([value, label]) => (
-                      <option key={value} value={value}>
-                        {label}
-                      </option>
-                    ))}
-                  </select>
-                  <button type="button" className="btn small" onClick={() => void addEntry()}>
-                    <Plus size={13} /> 添加
-                  </button>
-                </div>
-              </div>
+              ) : null}
 
               <div className="settings-form" style={{ marginTop: 14 }}>
                 <div className="field full">
@@ -1147,7 +1255,11 @@ export function Settings({
                   </div>
                 </div>
                 <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
-                  <button type="button" className="btn small" onClick={() => setConfirm('clear')}>
+                  <button
+                    type="button"
+                    className="btn small danger-link"
+                    onClick={() => setConfirm('clear')}
+                  >
                     <Trash2 size={13} /> 清除登录会话
                   </button>
                   <button
@@ -1166,111 +1278,13 @@ export function Settings({
             </div>
           </section>
 
-          <section className="card settings-section" id="settings-ai">
+          <section
+            className="settings-section"
+            id="settings-import"
+            aria-labelledby="settings-import-title"
+          >
             <div className="settings-section-head">
-              <h3>AI 解题助手</h3>
-              <p>
-                可选功能，使用你自己的 OpenAI 兼容接口。API Key 通过系统安全存储加密，不写入日志。
-              </p>
-            </div>
-            <div className="settings-rows">
-              <div className="setting-row">
-                <div className="setting-copy">
-                  <div className="setting-label">启用 AI 助手</div>
-                  <div className="setting-desc">
-                    关闭时题目助手仍可手动整理题目，只有生成答案需要调用外部服务。
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  className={aiEnabled ? 'switch on' : 'switch'}
-                  aria-label="切换 AI 助手"
-                  aria-pressed={aiEnabled}
-                  onClick={() => setAiEnabled((value) => !value)}
-                />
-              </div>
-              <div className="settings-form">
-                <label className="field">
-                  <span className="label">API 地址</span>
-                  <input
-                    className="input"
-                    value={aiBaseUrl}
-                    onChange={(event) => setAiBaseUrl(event.target.value)}
-                    placeholder="https://api.openai.com/v1"
-                    spellCheck={false}
-                  />
-                  <span className="hint">必须使用 HTTPS；本机 localhost 调试可使用 HTTP。</span>
-                </label>
-                <label className="field">
-                  <span className="label">模型</span>
-                  <input
-                    className="input"
-                    value={aiModel}
-                    onChange={(event) => setAiModel(event.target.value)}
-                    placeholder="gpt-4o-mini"
-                    spellCheck={false}
-                  />
-                </label>
-                <label className="field full">
-                  <span className="label">
-                    <KeyRound size={13} /> API Key
-                  </span>
-                  <input
-                    className="input"
-                    type="password"
-                    value={aiKey}
-                    onChange={(event) => {
-                      setAiKey(event.target.value)
-                      if (event.target.value.trim()) setClearAiKey(false)
-                    }}
-                    placeholder={
-                      aiConfig?.hasApiKey ? '已保存，留空表示不修改' : '粘贴你的 API Key'
-                    }
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  <span className="hint">
-                    {aiConfig?.keyStorageAvailable
-                      ? 'Key 使用 Electron safeStorage 加密后保存于本地数据库。'
-                      : '当前系统安全存储不可用，无法保存 API Key。'}
-                  </span>
-                </label>
-              </div>
-              <div className="settings-actions">
-                {aiConfig?.hasApiKey ? (
-                  <label className="checkbox-line">
-                    <input
-                      type="checkbox"
-                      checked={clearAiKey}
-                      onChange={(event) => setClearAiKey(event.target.checked)}
-                    />
-                    删除已保存的 Key
-                  </label>
-                ) : (
-                  <span className="setting-desc">尚未保存 API Key</span>
-                )}
-                <button
-                  type="button"
-                  className="btn primary small"
-                  onClick={() => void saveAiConfig()}
-                  disabled={aiSaving}
-                >
-                  <Save size={14} /> {aiSaving ? '保存中…' : '保存 AI 配置'}
-                </button>
-              </div>
-              <div className="info-box">
-                <span>隐私</span>
-                <strong>
-                  只有你主动点击“生成思路”时，题目才会发送到你配置的 API
-                  地址；本地题目卡不会自动上传。
-                </strong>
-              </div>
-            </div>
-          </section>
-
-          <section className="card settings-section" id="settings-import">
-            <div className="settings-section-head">
-              <h3>手动导入</h3>
+              <h2 id="settings-import-title">手动导入</h2>
               <p>
                 不依赖学习通账号的稳定数据入口，支持 CSV、ICS 日历文件，以及从其他工具导出的 JSON
                 学习快照。
@@ -1390,9 +1404,13 @@ export function Settings({
             </div>
           </section>
 
-          <section className="card settings-section" id="settings-about">
+          <section
+            className="settings-section"
+            id="settings-about"
+            aria-labelledby="settings-about-title"
+          >
             <div className="settings-section-head">
-              <h3>数据与关于</h3>
+              <h2 id="settings-about-title">数据与关于</h2>
               <p>本地数据位置、演示数据恢复和应用版本信息。</p>
             </div>
             <div className="settings-rows">
@@ -1408,25 +1426,38 @@ export function Settings({
                   </strong>
                 </div>
                 <div className="info-box" style={{ gridColumn: '1 / -1' }}>
+                  <span>数据工作区</span>
+                  <strong>
+                    {appInfo.workspace.mode === 'local'
+                      ? '本机工作区（未绑定学习通账号）'
+                      : appInfo.workspace.mode === 'readonly'
+                        ? '历史数据（只读）'
+                        : `账号独立数据库 · ${appInfo.workspace.id}`}
+                  </strong>
+                </div>
+                <div className="info-box" style={{ gridColumn: '1 / -1' }}>
                   <span>数据目录</span>
                   <strong>{appInfo.dataPath}</strong>
                 </div>
               </div>
-              <div className="setting-row" style={{ marginTop: 5 }}>
-                <div className="setting-copy">
-                  <div className="setting-label">恢复演示数据</div>
-                  <div className="setting-desc">
-                    将清空当前课程、任务与提醒，并重建 5 门模拟课程和 15
-                    项任务。官方入口设置会保留。
+              <div className="settings-danger-zone">
+                <h3 className="settings-subhead">危险操作</h3>
+                <div className="setting-row setting-row-danger">
+                  <div className="setting-copy">
+                    <div className="setting-label">恢复演示数据</div>
+                    <div className="setting-desc">
+                      将清空当前课程、任务与提醒，并重建 5 门模拟课程和 15
+                      项任务。官方入口设置会保留。
+                    </div>
                   </div>
+                  <button
+                    type="button"
+                    className="btn small danger"
+                    onClick={() => setConfirm('reset')}
+                  >
+                    <RefreshCw size={13} /> 恢复演示数据
+                  </button>
                 </div>
-                <button
-                  type="button"
-                  className="btn small danger"
-                  onClick={() => setConfirm('reset')}
-                >
-                  <RefreshCw size={13} /> 恢复演示数据
-                </button>
               </div>
               <div className="setting-row">
                 <div className="setting-copy">
@@ -1451,7 +1482,8 @@ export function Settings({
                 <div className="setting-copy">
                   <div className="setting-label">学习通数据接入</div>
                   <div className="setting-desc">
-                    使用你在 Portal 中本人登录后建立的 Web Session，只读读取课程与作业；应用不保存账号密码，也不会绕过验证码或风控。登录状态以受保护页面的实际请求结果为准。
+                    使用你在 Portal 中本人登录后建立的 Web
+                    Session，只读读取课程与作业；应用不保存账号密码，也不会绕过验证码或风控。登录状态以受保护页面的实际请求结果为准。
                   </div>
                 </div>
                 <span className="portal-status">{AUTH_STATE_LABEL[chaoxing.authState]}</span>

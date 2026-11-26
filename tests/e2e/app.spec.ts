@@ -36,9 +36,9 @@ async function launch(): Promise<void> {
 async function openTasks(): Promise<void> {
   await page
     .getByRole('navigation', { name: '主导航' })
-    .getByRole('button', { name: /任务中心/ })
+    .getByRole('button', { name: /作业/ })
     .click()
-  await expect(page.getByRole('heading', { name: '任务与 DDL' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: '作业', exact: true })).toBeVisible()
 }
 
 test.beforeAll(async () => {
@@ -53,10 +53,9 @@ test.afterAll(async () => {
 
 test('无账号启动、仪表盘、任务 CRUD、重启持久化与渲染进程隔离', async () => {
   await expect(page.locator('.titlebar-brand')).toContainText('StudyNext')
-  await expect(page.getByRole('heading', { name: '学习总览' })).toBeVisible()
-  await expect(page.getByText('本地模式 · 未连接学习通')).toBeVisible()
-  const courseMetric = page.locator('.metric-card').filter({ hasText: '本学期课程' })
-  await expect(courseMetric.locator('.metric-value')).toContainText('5')
+  await expect(page.locator('.studio-today')).toBeVisible()
+  await expect(page.locator('.today-sync-strip')).toBeVisible()
+  await expect(page.locator('.studio-full-week-table')).toBeVisible()
   await expect(page.locator('.notice-item').first()).toBeVisible()
   await page.screenshot({ path: join(ROOT, 'test-results', 'dashboard.png') })
 
@@ -64,6 +63,8 @@ test('无账号启动、仪表盘、任务 CRUD、重启持久化与渲染进程
     Object.keys((window as unknown as { studynext: Record<string, unknown> }).studynext).sort()
   )
   expect(exposedKeys).toContain('bootstrap')
+  expect(exposedKeys).not.toContain('questions')
+  expect(exposedKeys).not.toContain('ai')
   expect(
     await page.evaluate(() => typeof (window as unknown as { ipcRenderer?: unknown }).ipcRenderer)
   ).toBe('undefined')
@@ -105,10 +106,20 @@ test('无账号启动、仪表盘、任务 CRUD、重启持久化与渲染进程
   await expect(page.getByText('任务已删除')).toBeVisible()
   await expect(page.locator('.task-row')).toHaveCount(initialTaskCount)
 
-  await page
-    .getByRole('navigation', { name: '主导航' })
-    .getByRole('button', { name: '设置' })
-    .click()
+  await page.locator('button[aria-label="设置"]').click()
   await expect(page.getByRole('heading', { name: '偏好与数据' })).toBeVisible()
   await page.screenshot({ path: join(ROOT, 'test-results', 'settings.png') })
+
+  await page.getByRole('button', { name: /清除登录会话/ }).click()
+  await page.getByRole('button', { name: '清除会话', exact: true }).click()
+  await expect(page.getByText('学习通隔离会话中的 Cookie 与缓存已清除')).toBeVisible()
+  const afterClear = await page.evaluate(async () => {
+    const api = (
+      window as unknown as {
+        studynext: { bootstrap: () => Promise<{ chaoxing: { userDisconnected?: boolean } }> }
+      }
+    ).studynext
+    return api.bootstrap()
+  })
+  expect(afterClear.chaoxing.userDisconnected).toBe(true)
 })

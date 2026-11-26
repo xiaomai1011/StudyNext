@@ -1,31 +1,29 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC } from '@shared/ipc'
 import type {
-  AiAnswer,
-  AiAskInput,
-  AiConfig,
-  AiConfigInput,
   AppSettings,
+  BatchRetryResult,
   BootstrapData,
   ChaoxingCredentialStatus,
   ChaoxingSessionStatus,
+  ChaoxingAvatarUpdatedEvent,
   Course,
   ImportResult,
+  MaterialLocalFile,
   OfficialEntry,
   OfficialEntryInput,
+  PortalAutoLoginResult,
   PortalDownload,
   PortalSecurityState,
   PortalState,
   PortalSubmitEvent,
   PortalUploadEvent,
-  QuestionCard,
-  QuestionInput,
-  QuestionSource,
   ReminderFiredEvent,
   SnapshotImportResult,
   StudyNextApi,
   SyncProgressEvent,
   SyncStatus,
+  SystemReminderStatus,
   Task,
   TaskChange,
   TaskUpsertInput,
@@ -48,14 +46,24 @@ const api: StudyNextApi = {
     remove: (id: string) => ipcRenderer.invoke(IPC.tasksRemove, id) as Promise<void>,
     setCompleted: (id: string, completed: boolean) =>
       ipcRenderer.invoke(IPC.tasksSetCompleted, id, completed) as Promise<Task>,
-    history: (id: string) => ipcRenderer.invoke(IPC.tasksHistory, id) as Promise<TaskChange[]>
+    history: (id: string) => ipcRenderer.invoke(IPC.tasksHistory, id) as Promise<TaskChange[]>,
+    downloadAttachment: (taskId: string, attachmentIndex: number) =>
+      ipcRenderer.invoke(IPC.tasksDownloadAttachment, taskId, attachmentIndex) as Promise<void>
   },
   courses: {
     setFavorite: (id: string, favorite: boolean) =>
       ipcRenderer.invoke(IPC.coursesSetFavorite, id, favorite) as Promise<Course>
   },
   materials: {
-    download: (id: string) => ipcRenderer.invoke(IPC.materialsDownload, id) as Promise<void>
+    download: (id: string) =>
+      ipcRenderer.invoke(IPC.materialsDownload, id) as Promise<PortalDownload>,
+    localFiles: () => ipcRenderer.invoke(IPC.materialsLocalFiles) as Promise<MaterialLocalFile[]>,
+    openLocal: (materialId: string) =>
+      ipcRenderer.invoke(IPC.materialsOpenLocal, materialId) as Promise<void>,
+    revealLocal: (materialId: string) =>
+      ipcRenderer.invoke(IPC.materialsRevealLocal, materialId) as Promise<void>,
+    onLocalFilesChanged: (callback: (files: MaterialLocalFile[]) => void) =>
+      subscribe<MaterialLocalFile[]>(IPC.materialsLocalFilesEvent, callback)
   },
   study: {
     setPointCompleted: (id: string, completed: boolean) =>
@@ -64,23 +72,16 @@ const api: StudyNextApi = {
         completed
       }) as Promise<ToggleStudyPointResult>
   },
-  questions: {
-    create: (input: QuestionInput, source?: QuestionSource) =>
-      ipcRenderer.invoke(IPC.questionsCreate, input, source) as Promise<QuestionCard>,
-    update: (id: string, input: QuestionInput) =>
-      ipcRenderer.invoke(IPC.questionsUpdate, id, input) as Promise<QuestionCard>,
-    remove: (id: string) => ipcRenderer.invoke(IPC.questionsRemove, id) as Promise<void>
-  },
-  ai: {
-    getConfig: () => ipcRenderer.invoke(IPC.aiGetConfig) as Promise<AiConfig>,
-    updateConfig: (input: AiConfigInput) =>
-      ipcRenderer.invoke(IPC.aiUpdateConfig, input) as Promise<AiConfig>,
-    ask: (input: AiAskInput) => ipcRenderer.invoke(IPC.aiAsk, input) as Promise<AiAnswer>
-  },
   settings: {
     update: (patch: Partial<AppSettings>) =>
       ipcRenderer.invoke(IPC.settingsUpdate, patch) as Promise<AppSettings>,
     testNotification: () => ipcRenderer.invoke(IPC.settingsTestNotification) as Promise<void>
+  },
+  notifications: {
+    systemStatus: () =>
+      ipcRenderer.invoke(IPC.notificationsSystemStatus) as Promise<SystemReminderStatus>,
+    repairSystemTask: () =>
+      ipcRenderer.invoke(IPC.notificationsRepairSystemTask) as Promise<SystemReminderStatus>
   },
   demo: {
     reset: () => ipcRenderer.invoke(IPC.demoReset) as Promise<void>
@@ -93,16 +94,27 @@ const api: StudyNextApi = {
   },
   sync: {
     status: () => ipcRenderer.invoke(IPC.syncStatus) as Promise<SyncStatus>,
-    run: () => ipcRenderer.invoke(IPC.syncRun) as Promise<SyncStatus>
+    run: (operationId?: string) =>
+      ipcRenderer.invoke(IPC.syncRun, operationId) as Promise<SyncStatus>
   },
   chaoxing: {
     status: () => ipcRenderer.invoke(IPC.chaoxingStatus) as Promise<ChaoxingSessionStatus>,
-    check: () => ipcRenderer.invoke(IPC.chaoxingCheck) as Promise<ChaoxingSessionStatus>,
-    sync: (force?: boolean) =>
-      ipcRenderer.invoke(IPC.chaoxingSync, force === true) as Promise<ChaoxingSessionStatus>,
-    retryCourse: (courseId: string) =>
-      ipcRenderer.invoke(IPC.chaoxingRetryCourse, courseId) as Promise<ChaoxingSessionStatus>,
-    cancel: () => ipcRenderer.invoke(IPC.chaoxingCancel) as Promise<ChaoxingSessionStatus>,
+    check: (operationId?: string) =>
+      ipcRenderer.invoke(IPC.chaoxingCheck, operationId) as Promise<ChaoxingSessionStatus>,
+    sync: (force?: boolean, operationId?: string) =>
+      ipcRenderer.invoke(
+        IPC.chaoxingSync,
+        force === true,
+        operationId
+      ) as Promise<ChaoxingSessionStatus>,
+    retryCourse: (courseId: string, operationId?: string) =>
+      ipcRenderer.invoke(
+        IPC.chaoxingRetryCourse,
+        courseId,
+        operationId
+      ) as Promise<ChaoxingSessionStatus>,
+    cancel: (operationId?: string) =>
+      ipcRenderer.invoke(IPC.chaoxingCancel, operationId) as Promise<ChaoxingSessionStatus>,
     onSyncProgress: (callback: (event: SyncProgressEvent) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, payload: SyncProgressEvent): void => {
         callback(payload)
@@ -112,20 +124,43 @@ const api: StudyNextApi = {
         ipcRenderer.removeListener(IPC.chaoxingSyncProgress, listener)
       }
     },
+    onAvatarUpdated: (callback: (event: ChaoxingAvatarUpdatedEvent) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: ChaoxingAvatarUpdatedEvent
+      ): void => {
+        callback(payload)
+      }
+      ipcRenderer.on(IPC.chaoxingAvatarUpdated, listener)
+      return () => {
+        ipcRenderer.removeListener(IPC.chaoxingAvatarUpdated, listener)
+      }
+    },
     credentialsStatus: () =>
       ipcRenderer.invoke(IPC.chaoxingCredentialsStatus) as Promise<ChaoxingCredentialStatus>,
     saveCredentials: (input) =>
-      ipcRenderer.invoke(
-        IPC.chaoxingCredentialsSave,
-        input
-      ) as Promise<ChaoxingCredentialStatus>,
+      ipcRenderer.invoke(IPC.chaoxingCredentialsSave, input) as Promise<ChaoxingCredentialStatus>,
     clearCredentials: () =>
       ipcRenderer.invoke(IPC.chaoxingCredentialsClear) as Promise<ChaoxingCredentialStatus>,
-    fillCredentials: () => ipcRenderer.invoke(IPC.chaoxingCredentialsFill) as Promise<boolean>
+    fillCredentials: () => ipcRenderer.invoke(IPC.chaoxingCredentialsFill) as Promise<boolean>,
+    autoLogin: (accountId?: string, operationId?: string, automatic?: boolean) =>
+      ipcRenderer.invoke(
+        IPC.chaoxingAutoLogin,
+        accountId,
+        operationId,
+        automatic === true
+      ) as Promise<PortalAutoLoginResult>,
+    removeAccount: (id: string) =>
+      ipcRenderer.invoke(IPC.chaoxingCredentialsRemove, id) as Promise<ChaoxingCredentialStatus>,
+    activateAccount: (id: string) =>
+      ipcRenderer.invoke(IPC.chaoxingCredentialsActivate, id) as Promise<ChaoxingCredentialStatus>,
+    switchAccount: (id: string) =>
+      ipcRenderer.invoke(IPC.chaoxingSwitchAccount, id) as Promise<ChaoxingCredentialStatus>
   },
   portal: {
     open: (entryId: string) => ipcRenderer.invoke(IPC.portalOpen, entryId) as Promise<void>,
     openUrl: (url: string) => ipcRenderer.invoke(IPC.portalOpenUrl, url) as Promise<void>,
+    hide: () => ipcRenderer.invoke(IPC.portalHide) as Promise<void>,
     close: () => ipcRenderer.invoke(IPC.portalClose) as Promise<void>,
     state: () => ipcRenderer.invoke(IPC.portalState) as Promise<PortalState>,
     back: () => ipcRenderer.invoke(IPC.portalBack) as Promise<void>,
@@ -139,21 +174,20 @@ const api: StudyNextApi = {
     setBounds: (bounds: { x: number; y: number; width: number; height: number }) =>
       ipcRenderer.invoke(IPC.portalSetBounds, bounds) as Promise<void>,
     downloads: () => ipcRenderer.invoke(IPC.portalDownloads) as Promise<PortalDownload[]>,
-    download: (url: string) =>
-      ipcRenderer.invoke(IPC.portalDownload, url) as Promise<void>,
-    openDownload: (id: string) =>
-      ipcRenderer.invoke(IPC.portalOpenDownload, id) as Promise<void>,
+    download: (url: string) => ipcRenderer.invoke(IPC.portalDownload, url) as Promise<void>,
+    openDownload: (id: string) => ipcRenderer.invoke(IPC.portalOpenDownload, id) as Promise<void>,
     revealDownload: (id: string) =>
       ipcRenderer.invoke(IPC.portalRevealDownload, id) as Promise<void>,
     cancelDownload: (id: string) =>
       ipcRenderer.invoke(IPC.portalCancelDownload, id) as Promise<void>,
     retryDownload: (id: string) =>
-      ipcRenderer.invoke(IPC.portalRetryDownload, id) as Promise<void>,
+      ipcRenderer.invoke(IPC.portalRetryDownload, id) as Promise<PortalDownload | null>,
+    retryFailedDownloads: (options?: { courseId?: string | null; downloadIds?: string[] }) =>
+      ipcRenderer.invoke(IPC.portalRetryFailedDownloads, options) as Promise<BatchRetryResult>,
     deleteDownload: (id: string) =>
       ipcRenderer.invoke(IPC.portalDeleteDownload, id) as Promise<void>,
     clearDownloads: () => ipcRenderer.invoke(IPC.portalClearDownloads) as Promise<void>,
-    downloadDirectory: () =>
-      ipcRenderer.invoke(IPC.portalDownloadDirectory) as Promise<string>,
+    downloadDirectory: () => ipcRenderer.invoke(IPC.portalDownloadDirectory) as Promise<string>,
     chooseDownloadDirectory: () =>
       ipcRenderer.invoke(IPC.portalChooseDownloadDirectory) as Promise<string | null>,
     onDownload: (callback: (item: PortalDownload) => void) =>
@@ -187,6 +221,7 @@ const api: StudyNextApi = {
       subscribe<ReminderFiredEvent>(IPC.eventReminder, callback),
     onFocusTask: (callback: (taskId: string) => void) =>
       subscribe<string>(IPC.eventFocusTask, callback),
+    rendererReady: () => ipcRenderer.send(IPC.appRendererReady),
     openDataDirectory: () => ipcRenderer.invoke(IPC.appOpenDataDirectory) as Promise<void>,
     openExternal: (url: string) => ipcRenderer.invoke(IPC.appOpenExternal, url) as Promise<void>
   }

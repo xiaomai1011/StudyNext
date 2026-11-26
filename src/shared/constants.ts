@@ -1,4 +1,4 @@
-import type { AppSettings, QuestionSource, StudyPointKind, TaskKind, TaskPriority } from './types'
+import type { AppSettings, StudyPointKind, TaskKind, TaskPriority } from './types'
 
 export const APP_NAME = 'StudyNext'
 export const APP_ID = 'com.studynext.desktop'
@@ -19,6 +19,11 @@ export const REMINDER_MAX_MINUTES = 60 * 24 * 30
  */
 export const UNKNOWN_DUE_AT = '2099-12-31T15:59:59.000Z'
 
+export const UI_ZOOM_MIN = 0.75
+export const UI_ZOOM_MAX = 1.35
+export const UI_ZOOM_STEP = 0.05
+export const UI_ZOOM_PRESETS = [0.75, 0.8, 0.85, 0.9, 0.95, 1, 1.1, 1.25] as const
+
 export const DEFAULT_SETTINGS: AppSettings = {
   theme: 'system',
   closeToTray: true,
@@ -28,7 +33,9 @@ export const DEFAULT_SETTINGS: AppSettings = {
   calendarWeekStartsOn: 1,
   catchUpMissedReminders: true,
   trustedSsoDomains: [],
-  downloadDirectory: ''
+  downloadDirectory: '',
+  autoRefreshMinutes: 5,
+  uiZoom: 1
 }
 
 export const TASK_PRIORITY_LABEL: Record<TaskPriority, string> = {
@@ -45,15 +52,6 @@ export const STUDY_POINT_LABEL: Record<StudyPointKind, string> = {
   assignment: '作业',
   other: '学习任务'
 }
-
-export const QUESTION_SOURCE_LABEL: Record<QuestionSource, string> = {
-  manual: '手动整理',
-  ai: 'AI 生成',
-  import: '快照导入'
-}
-
-export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1'
-export const DEFAULT_AI_MODEL = 'gpt-4o-mini'
 
 export const TASK_KIND_LABEL: Record<TaskKind, string> = {
   homework: '作业',

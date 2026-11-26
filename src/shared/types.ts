@@ -14,13 +14,33 @@ export type TaskField =
   | 'reminders'
 export type DataSource = 'demo' | 'manual' | 'import' | 'chaoxing'
 export type SyncState = 'not_configured' | 'syncing' | 'success' | 'partial' | 'failure'
+
+export type SyncOperationKind =
+  | 'manual_sync'
+  | 'auto_sync'
+  | 'retry_course'
+  | 'submit_verify'
+  | 'auth_check'
+  | 'auto_login'
+
+export type SyncOperationState =
+  | 'success'
+  | 'partial'
+  | 'cached'
+  | 'not_configured'
+  | 'failure'
+  | 'cancelled'
+  | 'too_late'
+  | 'busy'
+
+export type SyncOperationStage = 'auth' | 'pull' | 'persist' | 'done'
 export type ChaoxingAuthState = 'unknown' | 'logged_out' | 'authenticated' | 'expired'
 export type ChaoxingTransport = 'session_fetch' | 'net_request' | 'none'
 /**
  * 平台作业状态。与本地完成状态分离：
  * - not_submitted 未提交
  * - submitted 已提交（等待批阅）
- * - pending_review 待批阅
+ * - pending_review 待审核
  * - reviewed 已批阅/已评分
  * - done 已完成/已通过
  * - unknown 平台未给出可识别状态
@@ -33,10 +53,35 @@ export type PlatformStatusKind =
   | 'done'
   | 'unknown'
 
+export interface ChaoxingSavedAccount {
+  id: string
+  username: string
+  displayName: string | null
+  school: string | null
+  /** 可靠绑定后的学习通平台 UID；null 表示尚未完成身份校验。 */
+  platformUid: string | null
+  lastUsedAt: string | null
+}
+
 export interface ChaoxingCredentialStatus {
   saved: boolean
   username: string | null
   encryptionAvailable: boolean
+  accounts: ChaoxingSavedAccount[]
+  activeAccountId: string | null
+}
+
+export interface PortalAutoLoginResult {
+  ok: boolean
+  message: string
+  needsManual: boolean
+}
+
+export interface ChaoxingAvatarUpdatedEvent {
+  uid: string
+  generation: number
+  requestId: number
+  avatarUrl: string
 }
 
 export interface ChaoxingSessionStatus {
@@ -45,9 +90,33 @@ export interface ChaoxingSessionStatus {
   message: string
   displayName: string | null
   school: string | null
+  studentId?: string | null
+  avatarUrl?: string | null
   checkedAt: string | null
   lastSyncAt: string | null
+  lastCompleteSyncAt?: string | null
   lastAttemptAt: string | null
+  lastOutcome?:
+    | 'success'
+    | 'partial'
+    | 'failure'
+    | 'not_configured'
+    | 'cancelled'
+    | 'too_late'
+    | null
+  lastOutcomeMessage?: string | null
+  lastOutcomeDetail?: string | null
+  lastOutcomeAt?: string | null
+  lastCourseRetryOutcome?: 'success' | 'partial' | 'failure' | 'cancelled' | null
+  lastCourseRetryObservedTaskExternalIds?: string[] | null
+  lastRunCached?: boolean | null
+  lastRunStage?: 'auth' | 'pull' | 'persist' | 'done' | null
+  lastOperationId?: string | null
+  lastOperationKind?: SyncOperationKind | null
+  lastOperationState?: SyncOperationState | null
+  lastRunCommitted?: boolean | null
+  /** 用户主动清除会话后为 true，直到本人重新登录；后台调度不得自动恢复连接。 */
+  userDisconnected?: boolean
   syncedCourses: number
   syncedTasks: number
   syncedChapters: number
@@ -92,6 +161,25 @@ export interface Course {
 
 export type StudyPointKind = 'video' | 'reading' | 'quiz' | 'discussion' | 'assignment' | 'other'
 
+export interface ChapterResource {
+  name: string
+  size: string | null
+  type: string | null
+  url: string | null
+  objectId: string | null
+}
+
+export interface ChapterSection {
+  number: string
+  title: string
+  completed: boolean
+  pendingCount: number
+  locked: boolean
+  chapterId?: string | null
+  sourceUrl?: string | null
+  resources: ChapterResource[]
+}
+
 export interface Chapter {
   id: string
   courseId: string
@@ -100,6 +188,8 @@ export interface Chapter {
   sortOrder: number
   progress: number
   lastStudiedAt: string | null
+  sourceUrl: string | null
+  sections: ChapterSection[]
   source: DataSource
   createdAt: string
   updatedAt: string
@@ -118,54 +208,6 @@ export interface StudyPoint {
   source: DataSource
   createdAt: string
   updatedAt: string
-}
-
-export type QuestionSource = 'manual' | 'ai' | 'import'
-
-export interface QuestionCard {
-  id: string
-  question: string
-  answer: string
-  explanation: string
-  courseId: string | null
-  tags: string[]
-  source: QuestionSource
-  createdAt: string
-  updatedAt: string
-}
-
-export interface QuestionInput {
-  question: string
-  answer: string
-  explanation: string
-  courseId: string | null
-  tags: string[]
-}
-
-export interface AiConfig {
-  enabled: boolean
-  baseUrl: string
-  model: string
-  hasApiKey: boolean
-  keyStorageAvailable: boolean
-}
-
-export interface AiConfigInput {
-  enabled: boolean
-  baseUrl: string
-  model: string
-  apiKey?: string | undefined
-  clearApiKey?: boolean | undefined
-}
-
-export interface AiAskInput {
-  question: string
-  courseId: string | null
-}
-
-export interface AiAnswer {
-  answer: string
-  model: string
 }
 
 export interface ReminderRule {
@@ -243,6 +285,10 @@ export interface AppSettings {
   trustedSsoDomains: string[]
   /** 空字符串表示使用系统下载目录下的 StudyNext 文件夹。 */
   downloadDirectory: string
+  /** 自动刷新间隔（分钟）；0 表示关闭。 */
+  autoRefreshMinutes: number
+  /** 界面缩放比例（0.75–1.35，默认 1）。 */
+  uiZoom: number
 }
 
 export interface AppNotice {
@@ -277,6 +323,7 @@ export interface Exam {
 }
 
 export interface SyncProgressEvent {
+  opId?: string
   phase:
     | 'start'
     | 'courses'
@@ -324,6 +371,32 @@ export interface SyncStatus {
   lastSuccessAt: string | null
   detail: string | null
   snapshot: SnapshotInfo | null
+  cached?: boolean
+  operationId?: string | null
+  operationKind?: SyncOperationKind | null
+  operationState?: SyncOperationState | null
+  stage?: SyncOperationStage | null
+  committed?: boolean | null
+}
+
+/**
+ * Structured result returned by every sync operation entry point. The legacy
+ * status fields remain available for compatibility, but renderers must use this
+ * operation envelope for ownership, progress and final-state decisions.
+ */
+export interface SyncOperationResult {
+  operationId: string
+  kind: SyncOperationKind
+  state: SyncOperationState
+  stage: SyncOperationStage
+  committed: boolean
+  cached: boolean
+  message: string
+  detail: string | null
+  startedAt: string
+  finishedAt: string | null
+  status: SyncStatus | null
+  session: ChaoxingSessionStatus | null
 }
 
 export interface OfficialEntry {
@@ -349,13 +422,31 @@ export interface AppInfo {
   platform: string
   dataPath: string
   isPackaged: boolean
+  workspace: {
+    id: string
+    mode: 'account' | 'local' | 'readonly'
+    accountId: string | null
+  }
+}
+
+export interface SystemReminderStatus {
+  supported: boolean
+  taskName: string | null
+  registered: boolean
+  executablePath: string | null
+  nextRunAt: string | null
+  lastCheckAt: string | null
+  lastDeliveryAt: string | null
+  lastDeliveryError: string | null
+  lastScheduleError: string | null
+  lastError: string | null
+  needsReregister: boolean
 }
 
 export interface BootstrapData {
   courses: Course[]
   chapters: Chapter[]
   studyPoints: StudyPoint[]
-  questions: QuestionCard[]
   tasks: Task[]
   exams: Exam[]
   materials: Material[]
@@ -366,11 +457,12 @@ export interface BootstrapData {
   officialEntries: OfficialEntry[]
   appInfo: AppInfo
   reminderRuntime: {
-    mode: 'process_running'
+    mode: 'process_running' | 'system_task'
     note: string
     systemNotificationsSupported: boolean
     startupCatchUpCount: number
     nextReminderAt: string | null
+    system: SystemReminderStatus
   }
 }
 
@@ -407,6 +499,7 @@ export interface ToggleStudyPointResult {
 export interface ReminderFiredEvent {
   taskId: string
   taskTitle: string
+  courseName?: string | null
   dueAt: string
   offsetMinutes: number
   firedAt: string
@@ -449,11 +542,47 @@ export interface PortalDownload {
   startedAt: string
   completedAt: string | null
   savePath?: string
+  materialId?: string | null
+  attachmentTaskId?: string | null
+  attachmentObjectId?: string | null
+  attachmentFileName?: string | null
+  attachmentIndex?: number | null
+}
+
+export interface MaterialLocalFile {
+  materialId: string
+  courseId: string
+  downloadId: string | null
+  filename: string
+  savePath: string
+  fileSize: number
+  downloadedAt: string
+}
+
+export type BatchRetrySkipReason =
+  | 'already_local'
+  | 'in_progress'
+  | 'duplicate_source'
+  | 'out_of_scope'
+  | 'already_recovered'
+
+export interface BatchRetryResult {
+  startedDownloadIds: string[]
+  startedMaterialIds: string[]
+  startedItems: Array<{
+    downloadId: string
+    materialId: string | null
+    filename: string
+  }>
+  skipped: Array<{ id: string; reason: BatchRetrySkipReason }>
+  failed: Array<{ id: string; filename: string; materialId: string | null; error: string }>
 }
 
 export interface PortalSubmitEvent {
   url: string
   platformCourseId: string | null
+  platformClazzId?: string | null
+  platformWorkId?: string | null
   detectedAt: string
 }
 
@@ -465,7 +594,8 @@ export interface PortalUploadEvent {
   detectedAt: string
 }
 
-export interface PortalSecurityState {  sandbox: boolean
+export interface PortalSecurityState {
+  sandbox: boolean
   contextIsolation: boolean
   nodeIntegration: boolean
   hasPreload: boolean
@@ -488,9 +618,8 @@ export type NavigateTarget =
   | 'exams'
   | 'materials'
   | 'records'
-  | 'questions'
+  | 'notices'
   | 'calendar'
-  | 'portal'
   | 'settings'
 
 export interface StudyNextApi {
@@ -501,29 +630,28 @@ export interface StudyNextApi {
     remove: (id: string) => Promise<void>
     setCompleted: (id: string, completed: boolean) => Promise<Task>
     history: (id: string) => Promise<TaskChange[]>
+    downloadAttachment: (taskId: string, attachmentIndex: number) => Promise<void>
   }
   courses: {
     setFavorite: (id: string, favorite: boolean) => Promise<Course>
   }
   materials: {
-    download: (id: string) => Promise<void>
+    download: (id: string) => Promise<PortalDownload>
+    localFiles: () => Promise<MaterialLocalFile[]>
+    openLocal: (materialId: string) => Promise<void>
+    revealLocal: (materialId: string) => Promise<void>
+    onLocalFilesChanged: (callback: (files: MaterialLocalFile[]) => void) => () => void
   }
   study: {
     setPointCompleted: (id: string, completed: boolean) => Promise<ToggleStudyPointResult>
   }
-  questions: {
-    create: (input: QuestionInput, source?: QuestionSource) => Promise<QuestionCard>
-    update: (id: string, input: QuestionInput) => Promise<QuestionCard>
-    remove: (id: string) => Promise<void>
-  }
-  ai: {
-    getConfig: () => Promise<AiConfig>
-    updateConfig: (input: AiConfigInput) => Promise<AiConfig>
-    ask: (input: AiAskInput) => Promise<AiAnswer>
-  }
   settings: {
     update: (patch: Partial<AppSettings>) => Promise<AppSettings>
     testNotification: () => Promise<void>
+  }
+  notifications: {
+    systemStatus: () => Promise<SystemReminderStatus>
+    repairSystemTask: () => Promise<SystemReminderStatus>
   }
   demo: {
     reset: () => Promise<void>
@@ -534,23 +662,36 @@ export interface StudyNextApi {
   }
   sync: {
     status: () => Promise<SyncStatus>
-    run: () => Promise<SyncStatus>
+    run: (operationId?: string) => Promise<SyncStatus>
   }
   chaoxing: {
     status: () => Promise<ChaoxingSessionStatus>
-    check: () => Promise<ChaoxingSessionStatus>
-    sync: (force?: boolean) => Promise<ChaoxingSessionStatus>
-    retryCourse: (courseId: string) => Promise<ChaoxingSessionStatus>
-    cancel: () => Promise<ChaoxingSessionStatus>
+    check: (operationId?: string) => Promise<ChaoxingSessionStatus>
+    sync: (force?: boolean, operationId?: string) => Promise<ChaoxingSessionStatus>
+    retryCourse: (courseId: string, operationId?: string) => Promise<ChaoxingSessionStatus>
+    cancel: (operationId?: string) => Promise<ChaoxingSessionStatus>
     onSyncProgress: (callback: (event: SyncProgressEvent) => void) => () => void
+    onAvatarUpdated: (callback: (event: ChaoxingAvatarUpdatedEvent) => void) => () => void
     credentialsStatus: () => Promise<ChaoxingCredentialStatus>
-    saveCredentials: (input: { username: string; password: string }) => Promise<ChaoxingCredentialStatus>
+    saveCredentials: (input: {
+      username: string
+      password: string
+    }) => Promise<ChaoxingCredentialStatus>
     clearCredentials: () => Promise<ChaoxingCredentialStatus>
     fillCredentials: () => Promise<boolean>
+    autoLogin: (
+      accountId?: string,
+      operationId?: string,
+      automatic?: boolean
+    ) => Promise<PortalAutoLoginResult>
+    removeAccount: (id: string) => Promise<ChaoxingCredentialStatus>
+    activateAccount: (id: string) => Promise<ChaoxingCredentialStatus>
+    switchAccount: (id: string) => Promise<ChaoxingCredentialStatus>
   }
   portal: {
     open: (entryId: string) => Promise<void>
     openUrl: (url: string) => Promise<void>
+    hide: () => Promise<void>
     close: () => Promise<void>
     state: () => Promise<PortalState>
     back: () => Promise<void>
@@ -566,7 +707,11 @@ export interface StudyNextApi {
     openDownload: (id: string) => Promise<void>
     revealDownload: (id: string) => Promise<void>
     cancelDownload: (id: string) => Promise<void>
-    retryDownload: (id: string) => Promise<void>
+    retryDownload: (id: string) => Promise<PortalDownload | null>
+    retryFailedDownloads: (options?: {
+      courseId?: string | null
+      downloadIds?: string[]
+    }) => Promise<BatchRetryResult>
     deleteDownload: (id: string) => Promise<void>
     clearDownloads: () => Promise<void>
     downloadDirectory: () => Promise<string>
@@ -593,6 +738,7 @@ export interface StudyNextApi {
     onNavigate: (callback: (target: NavigateTarget) => void) => () => void
     onReminder: (callback: (event: ReminderFiredEvent) => void) => () => void
     onFocusTask: (callback: (taskId: string) => void) => () => void
+    rendererReady: () => void
     openDataDirectory: () => Promise<void>
     openExternal: (url: string) => Promise<void>
   }

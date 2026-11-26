@@ -196,3 +196,64 @@ test('第三方网页运行在隔离 WebContentsView 中且无法访问 Electron
   })
   expect(finalUrl).toBe(portalUrl)
 })
+
+test('Portal 打开时 Escape 严格按上层叠层优先级逐层关闭', async () => {
+  await page.evaluate(async (url) => {
+    const api = (window as unknown as { studynext: StudyNextApi }).studynext
+    await api.portal.hide()
+    await api.imports.snapshot({
+      fileName: 'portal-escape.json',
+      content: JSON.stringify({
+        courses: [
+          {
+            id: 'course-portal-esc',
+            name: 'Portal Escape 测试课程',
+            source: 'chaoxing',
+            sourceUrl: url,
+            schedule: []
+          }
+        ]
+      })
+    })
+  }, portalUrl)
+  await page.reload()
+  await expect(page.locator('.loading-screen')).toHaveCount(0, { timeout: 20_000 })
+
+  await page.locator('.studio-pill-item', { hasText: '课程' }).click()
+  await expect(page.locator('.studio-course-shell')).toBeVisible()
+  await page.locator('.course-rail-item', { hasText: 'Portal Escape 测试课程' }).click()
+  await page.getByRole('button', { name: '进入学习通课堂' }).click()
+  await expect(page.locator('.portal-overlay')).toBeVisible()
+
+  await page.locator('button[aria-label="页面入口与会话诊断"]').click()
+  await expect(page.locator('.studio-portal-drawer')).toBeVisible()
+
+  await page.locator('.titlebar-zoom-trigger').click()
+  await expect(page.locator('.titlebar-zoom-popover')).toBeVisible()
+
+  await page.keyboard.press('Control+k')
+  const palette = page.locator('.command-palette')
+  await expect(palette).toBeVisible()
+
+  // Layer 1: CommandPalette
+  await page.keyboard.press('Escape')
+  await expect(palette).toHaveCount(0)
+  await expect(page.locator('.titlebar-zoom-popover')).toBeVisible()
+  await expect(page.locator('.studio-portal-drawer')).toBeVisible()
+  await expect(page.locator('.portal-overlay')).toBeVisible()
+
+  // Layer 2: Topbar Zoom popover
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.titlebar-zoom-popover')).toHaveCount(0)
+  await expect(page.locator('.studio-portal-drawer')).toBeVisible()
+  await expect(page.locator('.portal-overlay')).toBeVisible()
+
+  // Layer 3: Portal Tools drawer
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.studio-portal-drawer')).toHaveCount(0)
+  await expect(page.locator('.portal-overlay')).toBeVisible()
+
+  // Layer 4: Portal overlay itself
+  await page.keyboard.press('Escape')
+  await expect(page.locator('.portal-overlay')).toHaveCount(0)
+})

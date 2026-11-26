@@ -58,7 +58,9 @@ export const settingsPatchSchema = z
     calendarWeekStartsOn: z.union([z.literal(0), z.literal(1)]).optional(),
     catchUpMissedReminders: z.boolean().optional(),
     trustedSsoDomains: z.array(ssoDomain).max(20, '最多配置 20 个 SSO 域名').optional(),
-    downloadDirectory: z.string().trim().max(500).optional()
+    downloadDirectory: z.string().trim().max(500).optional(),
+    autoRefreshMinutes: z.number().int().min(0).max(60).optional(),
+    uiZoom: z.number().min(0.75).max(1.35).optional()
   })
   .strict()
 
@@ -76,35 +78,6 @@ export const importPayloadSchema = z
 
 export const studyPointStatusSchema = z
   .object({ id: z.string().uuid(), completed: z.boolean() })
-  .strict()
-
-export const questionInputSchema = z
-  .object({
-    question: z.string().trim().min(1, '请输入题目').max(4000, '题目不能超过 4000 字'),
-    answer: z.string().trim().max(8000, '答案不能超过 8000 字'),
-    explanation: z.string().trim().max(8000, '解析不能超过 8000 字'),
-    courseId: z.string().uuid().nullable(),
-    tags: z.array(z.string().trim().min(1).max(24)).max(10, '最多添加 10 个标签').default([])
-  })
-  .strict()
-
-export const questionSourceSchema = z.enum(['manual', 'ai', 'import']).default('manual')
-
-export const aiConfigInputSchema = z
-  .object({
-    enabled: z.boolean(),
-    baseUrl: z.string().trim().min(1, '请输入 API 地址').max(2048),
-    model: z.string().trim().min(1, '请输入模型名称').max(120),
-    apiKey: z.string().trim().max(512).optional(),
-    clearApiKey: z.boolean().optional()
-  })
-  .strict()
-
-export const aiAskInputSchema = z
-  .object({
-    question: z.string().trim().min(2, '请输入至少 2 个字的题目').max(6000, '题目不能超过 6000 字'),
-    courseId: z.string().uuid().nullable()
-  })
   .strict()
 
 export const entryInputSchema = z

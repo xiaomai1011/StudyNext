@@ -30,5 +30,6 @@ nsis:
   shortcutName: StudyNext
   artifactName: StudyNext-Setup-${version}.${ext}
   uninstallDisplayName: StudyNext
+  include: build/installer.nsh
 npmRebuild: false
 publish: null

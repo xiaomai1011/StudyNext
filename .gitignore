@@ -1,6 +1,7 @@
 node_modules/
 out/
 release/
+release-d004/
 dist/
 coverage/
 playwright-report/

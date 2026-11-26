@@ -9,22 +9,22 @@ import {
   REMINDER_MAX_MINUTES
 } from '@shared/constants'
 import { normalizeReminderOffsets } from '@shared/domain'
+import { resolveNoticeCourseName } from '@shared/notice-course'
 import type {
   AppNotice,
   AppSettings,
   Chapter,
+  ChapterSection,
   Course,
   CourseSession,
   DataSource,
   Exam,
   Material,
+  MaterialLocalFile,
   OfficialEntry,
   OfficialEntryInput,
   PlatformStatusKind,
   PortalDownload,
-  QuestionCard,
-  QuestionInput,
-  QuestionSource,
   ReminderRule,
   StudyPoint,
   StudyPointKind,
@@ -102,6 +102,11 @@ interface DownloadRow {
   started_at: string
   completed_at: string | null
   save_path: string | null
+  material_id: string | null
+  attachment_task_id: string | null
+  attachment_object_id: string | null
+  attachment_file_name: string | null
+  attachment_index: number | null
 }
 
 interface TaskRow {
@@ -156,6 +161,44 @@ interface ReminderRow {
   created_at: string
 }
 
+export interface NotificationDeliveryFailure {
+  dedupeKey: string
+  taskId: string
+  ruleId: string
+  dueAt: string
+  scheduledFor: string
+  attemptCount: number
+  lastError: string
+  lastAttemptAt: string
+  nextRetryAt: string | null
+}
+
+interface DeliveryFailureRow {
+  dedupe_key: string
+  task_id: string
+  rule_id: string
+  due_at: string
+  scheduled_for: string
+  attempt_count: number
+  last_error: string
+  last_attempt_at: string
+  next_retry_at: string | null
+}
+
+function mapDeliveryFailure(row: DeliveryFailureRow): NotificationDeliveryFailure {
+  return {
+    dedupeKey: row.dedupe_key,
+    taskId: row.task_id,
+    ruleId: row.rule_id,
+    dueAt: row.due_at,
+    scheduledFor: row.scheduled_for,
+    attemptCount: row.attempt_count,
+    lastError: row.last_error,
+    lastAttemptAt: row.last_attempt_at,
+    nextRetryAt: row.next_retry_at
+  }
+}
+
 interface EntryRow {
   id: string
   label: string
@@ -175,6 +218,8 @@ interface ChapterRow {
   sort_order: number
   progress: number
   last_studied_at: string | null
+  source_url: string | null
+  sections_json: string
   source: string
   created_at: string
   updated_at: string
@@ -190,18 +235,6 @@ interface StudyPointRow {
   status: string
   duration_minutes: number | null
   sort_order: number
-  source: string
-  created_at: string
-  updated_at: string
-}
-
-interface QuestionRow {
-  id: string
-  question: string
-  answer: string
-  explanation: string
-  course_id: string | null
-  tags_json: string
   source: string
   created_at: string
   updated_at: string
@@ -237,6 +270,8 @@ CREATE TABLE IF NOT EXISTS course_chapters (
   sort_order INTEGER NOT NULL DEFAULT 0,
   progress REAL NOT NULL DEFAULT 0 CHECK (progress >= 0 AND progress <= 100),
   last_studied_at TEXT,
+  source_url TEXT,
+  sections_json TEXT NOT NULL DEFAULT '[]',
   source TEXT NOT NULL DEFAULT 'manual',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -265,20 +300,6 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_chapters_external
   ON course_chapters(course_id, source, external_id) WHERE external_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_points_external
   ON study_points(course_id, source, external_id) WHERE external_id IS NOT NULL;
-
-CREATE TABLE IF NOT EXISTS questions (
-  id TEXT PRIMARY KEY,
-  question TEXT NOT NULL,
-  answer TEXT NOT NULL DEFAULT '',
-  explanation TEXT NOT NULL DEFAULT '',
-  course_id TEXT REFERENCES courses(id) ON DELETE SET NULL,
-  tags_json TEXT NOT NULL DEFAULT '[]',
-  source TEXT NOT NULL DEFAULT 'manual' CHECK (source IN ('manual', 'ai', 'import')),
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_questions_updated ON questions(updated_at DESC);
 
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
@@ -356,9 +377,25 @@ CREATE TABLE IF NOT EXISTS downloads (
   total_bytes INTEGER NOT NULL DEFAULT 0,
   started_at TEXT NOT NULL,
   completed_at TEXT,
-  save_path TEXT
+  save_path TEXT,
+  material_id TEXT,
+  attachment_task_id TEXT,
+  attachment_object_id TEXT,
+  attachment_file_name TEXT,
+  attachment_index INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_downloads_started ON downloads(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS material_local_files (
+  material_id TEXT PRIMARY KEY,
+  course_id TEXT NOT NULL,
+  download_id TEXT,
+  filename TEXT NOT NULL,
+  save_path TEXT NOT NULL,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  downloaded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_material_local_course ON material_local_files(course_id);
 
 CREATE TABLE IF NOT EXISTS app_notices (
   id TEXT PRIMARY KEY,
@@ -406,6 +443,20 @@ CREATE TABLE IF NOT EXISTS notification_deliveries (
   delivered_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_delivery_task ON notification_deliveries(task_id);
+
+CREATE TABLE IF NOT EXISTS notification_delivery_failures (
+  dedupe_key TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  rule_id TEXT NOT NULL REFERENCES task_reminders(id) ON DELETE CASCADE,
+  due_at TEXT NOT NULL,
+  scheduled_for TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL CHECK (attempt_count >= 1),
+  last_error TEXT NOT NULL,
+  last_attempt_at TEXT NOT NULL,
+  next_retry_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_delivery_failure_retry
+  ON notification_delivery_failures(next_retry_at);
 
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
@@ -691,16 +742,38 @@ const DEMO_TASKS: ReadonlyArray<{
   }
 ]
 
+export interface StudyNextStoreOptions {
+  readOnly?: boolean
+  workspaceId?: string
+  accountId?: string
+}
+
 export class StudyNextStore {
   readonly db: DatabaseSync
+  readonly readOnly: boolean
+  readonly workspaceId: string | null
+  readonly accountId: string | null
+  private transactionDepth = 0
 
-  constructor(readonly filePath: string) {
+  constructor(
+    readonly filePath: string,
+    options: StudyNextStoreOptions = {}
+  ) {
+    this.readOnly = options.readOnly === true
+    this.workspaceId = options.workspaceId ?? null
+    this.accountId = options.accountId ?? null
     if (filePath !== ':memory:') {
       mkdirSync(dirname(filePath), { recursive: true })
     }
-    this.db = new DatabaseSync(filePath)
+    this.db = this.readOnly
+      ? new DatabaseSync(filePath, { readOnly: true })
+      : new DatabaseSync(filePath)
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
+    if (this.readOnly) {
+      this.db.exec('PRAGMA query_only = ON;')
+      return
+    }
     if (filePath !== ':memory:') {
       this.db.exec('PRAGMA journal_mode = WAL;')
     }
@@ -725,6 +798,18 @@ export class StudyNextStore {
     addCourseColumn('max_week', 'INTEGER NOT NULL DEFAULT 0')
     addCourseColumn('clazz_id', 'TEXT')
     addCourseColumn('class_name', 'TEXT')
+    const chapterColumns = this.db
+      .prepare('PRAGMA table_info(course_chapters)')
+      .all() as unknown as Array<{
+      name: string
+    }>
+    const addChapterColumn = (name: string, definition: string): void => {
+      if (!chapterColumns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE course_chapters ADD COLUMN ${name} ${definition}`)
+      }
+    }
+    addChapterColumn('source_url', 'TEXT')
+    addChapterColumn('sections_json', "TEXT NOT NULL DEFAULT '[]'")
     const taskColumns = this.db.prepare('PRAGMA table_info(tasks)').all() as unknown as Array<{
       name: string
     }>
@@ -745,10 +830,32 @@ export class StudyNextStore {
     addTaskColumn('attachments_json', "TEXT NOT NULL DEFAULT '[]'")
     // 旧版本把平台状态简化为 pending/done，升级到细粒度状态。
     this.db
-      .prepare("UPDATE tasks SET platform_status_kind = 'not_submitted' WHERE platform_status_kind = 'pending'")
+      .prepare(
+        "UPDATE tasks SET platform_status_kind = 'not_submitted' WHERE platform_status_kind = 'pending'"
+      )
       .run()
     addTaskColumn('manual_fields_json', "TEXT NOT NULL DEFAULT '[]'")
     addTaskColumn('field_sources_json', "TEXT NOT NULL DEFAULT '{}'")
+    const downloadColumns = this.db
+      .prepare('PRAGMA table_info(downloads)')
+      .all() as unknown as Array<{
+      name: string
+    }>
+    if (!downloadColumns.some((column) => column.name === 'material_id')) {
+      this.db.exec('ALTER TABLE downloads ADD COLUMN material_id TEXT')
+    }
+    if (!downloadColumns.some((column) => column.name === 'attachment_task_id')) {
+      this.db.exec('ALTER TABLE downloads ADD COLUMN attachment_task_id TEXT')
+    }
+    if (!downloadColumns.some((column) => column.name === 'attachment_object_id')) {
+      this.db.exec('ALTER TABLE downloads ADD COLUMN attachment_object_id TEXT')
+    }
+    if (!downloadColumns.some((column) => column.name === 'attachment_file_name')) {
+      this.db.exec('ALTER TABLE downloads ADD COLUMN attachment_file_name TEXT')
+    }
+    if (!downloadColumns.some((column) => column.name === 'attachment_index')) {
+      this.db.exec('ALTER TABLE downloads ADD COLUMN attachment_index INTEGER')
+    }
     this.db.exec(`
       DROP INDEX IF EXISTS idx_chapters_external;
       DROP INDEX IF EXISTS idx_points_external;
@@ -768,6 +875,17 @@ export class StudyNextStore {
       );
       CREATE INDEX IF NOT EXISTS idx_task_changes_task
         ON task_change_log(task_id, changed_at DESC);
+      CREATE TABLE IF NOT EXISTS material_local_files (
+        material_id TEXT PRIMARY KEY,
+        course_id TEXT NOT NULL,
+        download_id TEXT,
+        filename TEXT NOT NULL,
+        save_path TEXT NOT NULL,
+        file_size INTEGER NOT NULL DEFAULT 0,
+        downloaded_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_material_local_course
+        ON material_local_files(course_id);
     `)
   }
 
@@ -987,6 +1105,7 @@ export class StudyNextStore {
       for (const taskId of demoTaskIds) {
         this.db.prepare('DELETE FROM task_reminders WHERE task_id = ?').run(taskId)
         this.db.prepare('DELETE FROM notification_deliveries WHERE task_id = ?').run(taskId)
+        this.db.prepare('DELETE FROM notification_delivery_failures WHERE task_id = ?').run(taskId)
         this.db.prepare('DELETE FROM task_change_log WHERE task_id = ?').run(taskId)
       }
       for (const courseId of demoCourseIds) {
@@ -1033,6 +1152,13 @@ export class StudyNextStore {
       )
       .all() as unknown as MaterialRow[]
     return rows.map(mapMaterialRow)
+  }
+
+  getMaterial(id: string): Material | null {
+    const row = this.db
+      .prepare('SELECT * FROM materials WHERE id = ? LIMIT 1')
+      .get(id) as unknown as MaterialRow | undefined
+    return row ? mapMaterialRow(row) : null
   }
 
   replaceProviderMaterials(
@@ -1094,7 +1220,16 @@ export class StudyNextStore {
       totalBytes: row.total_bytes,
       startedAt: row.started_at,
       completedAt: row.completed_at,
-      ...(row.save_path ? { savePath: row.save_path } : {})
+      ...(row.save_path ? { savePath: row.save_path } : {}),
+      ...(row.material_id ? { materialId: row.material_id } : {}),
+      ...(row.attachment_task_id
+        ? {
+            attachmentTaskId: row.attachment_task_id,
+            attachmentObjectId: row.attachment_object_id,
+            attachmentFileName: row.attachment_file_name,
+            attachmentIndex: row.attachment_index
+          }
+        : {})
     }))
   }
 
@@ -1102,8 +1237,8 @@ export class StudyNextStore {
     this.db
       .prepare(
         `INSERT INTO downloads
-          (id, filename, url, state, received_bytes, total_bytes, started_at, completed_at, save_path)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (id, filename, url, state, received_bytes, total_bytes, started_at, completed_at, save_path, material_id, attachment_task_id, attachment_object_id, attachment_file_name, attachment_index)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            filename = excluded.filename,
            url = excluded.url,
@@ -1112,7 +1247,12 @@ export class StudyNextStore {
            total_bytes = excluded.total_bytes,
            started_at = excluded.started_at,
            completed_at = excluded.completed_at,
-           save_path = excluded.save_path`
+           save_path = excluded.save_path,
+           material_id = COALESCE(downloads.material_id, excluded.material_id),
+           attachment_task_id = COALESCE(downloads.attachment_task_id, excluded.attachment_task_id),
+           attachment_object_id = COALESCE(downloads.attachment_object_id, excluded.attachment_object_id),
+           attachment_file_name = COALESCE(downloads.attachment_file_name, excluded.attachment_file_name),
+           attachment_index = COALESCE(downloads.attachment_index, excluded.attachment_index)`
       )
       .run(
         item.id,
@@ -1123,7 +1263,12 @@ export class StudyNextStore {
         item.totalBytes,
         item.startedAt,
         item.completedAt,
-        item.savePath ?? null
+        item.savePath ?? null,
+        item.materialId ?? null,
+        item.attachmentTaskId ?? null,
+        item.attachmentObjectId ?? null,
+        item.attachmentFileName ?? null,
+        item.attachmentIndex ?? null
       )
   }
 
@@ -1139,11 +1284,92 @@ export class StudyNextStore {
     this.db.prepare('DELETE FROM downloads WHERE id = ?').run(id)
   }
 
-  listNotices(limit = 50): AppNotice[] {
+  listCompletedMaterialDownloads(): PortalDownload[] {
     const rows = this.db
       .prepare(
-        `SELECT * FROM app_notices ORDER BY published_at DESC, title ASC LIMIT ?`
+        `SELECT * FROM downloads
+         WHERE state = 'completed' AND material_id IS NOT NULL
+         ORDER BY COALESCE(completed_at, started_at) DESC, started_at DESC`
       )
+      .all() as unknown as DownloadRow[]
+    return rows.map((row) => ({
+      id: row.id,
+      filename: row.filename,
+      url: row.url,
+      state: row.state as PortalDownload['state'],
+      receivedBytes: row.received_bytes,
+      totalBytes: row.total_bytes,
+      startedAt: row.started_at,
+      completedAt: row.completed_at,
+      ...(row.save_path ? { savePath: row.save_path } : {}),
+      ...(row.material_id ? { materialId: row.material_id } : {})
+    }))
+  }
+
+  listMaterialLocalFiles(): MaterialLocalFile[] {
+    try {
+      const rows = this.db
+        .prepare('SELECT * FROM material_local_files ORDER BY downloaded_at DESC')
+        .all() as unknown as Array<{
+        material_id: string
+        course_id: string
+        download_id: string | null
+        filename: string
+        save_path: string
+        file_size: number
+        downloaded_at: string
+      }>
+      return rows.map((row) => ({
+        materialId: row.material_id,
+        courseId: row.course_id,
+        downloadId: row.download_id,
+        filename: row.filename,
+        savePath: row.save_path,
+        fileSize: row.file_size,
+        downloadedAt: row.downloaded_at
+      }))
+    } catch {
+      // Legacy read-only workspace may not contain the `material_local_files` table yet.
+      return []
+    }
+  }
+
+  upsertMaterialLocalFile(record: MaterialLocalFile): void {
+    this.db
+      .prepare(
+        `INSERT INTO material_local_files
+          (material_id, course_id, download_id, filename, save_path, file_size, downloaded_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(material_id) DO UPDATE SET
+           course_id = excluded.course_id,
+           download_id = excluded.download_id,
+           filename = excluded.filename,
+           save_path = excluded.save_path,
+           file_size = excluded.file_size,
+           downloaded_at = excluded.downloaded_at`
+      )
+      .run(
+        record.materialId,
+        record.courseId,
+        record.downloadId ?? null,
+        record.filename,
+        record.savePath,
+        record.fileSize,
+        record.downloadedAt
+      )
+  }
+
+  deleteMaterialLocalFile(materialId: string): void {
+    try {
+      this.db.prepare('DELETE FROM material_local_files WHERE material_id = ?').run(materialId)
+    } catch {
+      // Ignore if table is absent in legacy database.
+    }
+  }
+
+  listNotices(limit = 50): AppNotice[] {
+    const rows = this.db
+      .prepare(`SELECT * FROM app_notices ORDER BY published_at DESC, title ASC LIMIT ?`)
       .all(limit) as unknown as Array<{
       id: string
       title: string
@@ -1156,19 +1382,32 @@ export class StudyNextStore {
       url: string | null
       source: DataSource
     }>
-    return rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      body: row.body,
-      category: (row.category === 'course' || row.category === 'system' ? row.category : 'notice'),
-      publishedAt: row.published_at,
-      isDemo: false,
-      source: row.source,
-      sender: row.sender,
-      courseName: row.course_name,
-      read: row.is_read === null ? null : row.is_read === 1,
-      url: row.url
-    }))
+    const knownCourseNames = (
+      this.db.prepare('SELECT name FROM courses').all() as unknown as Array<{ name: string }>
+    ).map((course) => course.name)
+    return rows.map((row) => {
+      const courseName = resolveNoticeCourseName({
+        title: row.title,
+        body: row.body,
+        sender: row.sender,
+        currentCourseName: row.course_name,
+        knownCourseNames
+      })
+      const category = row.category === 'system' ? 'system' : courseName ? 'course' : 'notice'
+      return {
+        id: row.id,
+        title: row.title,
+        body: row.body,
+        category,
+        publishedAt: row.published_at,
+        isDemo: false,
+        source: row.source,
+        sender: row.sender,
+        courseName,
+        read: row.is_read === null ? null : row.is_read === 1,
+        url: row.url
+      }
+    })
   }
 
   upsertProviderNotice(
@@ -1274,7 +1513,9 @@ export class StudyNextStore {
           now,
           existing.id
         )
-      const exam = this.db.prepare('SELECT * FROM exams WHERE id = ?').get(existing.id) as unknown as ExamRow
+      const exam = this.db
+        .prepare('SELECT * FROM exams WHERE id = ?')
+        .get(existing.id) as unknown as ExamRow
       return { exam: mapExamRow(exam), created: false }
     }
     const id = randomUUID()
@@ -1312,10 +1553,15 @@ export class StudyNextStore {
     return row ? mapCourseRow(row) : null
   }
 
-  findCourseByName(name: string): Course | null {
-    const row = this.db
-      .prepare('SELECT * FROM courses WHERE name = ? COLLATE NOCASE LIMIT 1')
-      .get(name.trim()) as CourseRow | undefined
+  /** 按来源 + 名称查找课程；用于导入任务时限定在 import 记录内匹配。 */
+  findCourseByName(name: string, source?: DataSource): Course | null {
+    const row = source
+      ? (this.db
+          .prepare('SELECT * FROM courses WHERE name = ? COLLATE NOCASE AND source = ? LIMIT 1')
+          .get(name.trim(), source) as CourseRow | undefined)
+      : (this.db
+          .prepare('SELECT * FROM courses WHERE name = ? COLLATE NOCASE LIMIT 1')
+          .get(name.trim()) as CourseRow | undefined)
     return row ? mapCourseRow(row) : null
   }
 
@@ -1332,8 +1578,9 @@ export class StudyNextStore {
     return course
   }
 
+  /** 快照任务缺少课程引用时的兜底：只复用 import 来源的同名课程，绝不认领平台课程。 */
   createImportedCourse(name: string): Course {
-    const existing = this.findCourseByName(name)
+    const existing = this.findCourseByName(name, 'import')
     if (existing) return existing
     const id = randomUUID()
     const now = new Date().toISOString()
@@ -1394,6 +1641,11 @@ export class StudyNextStore {
     return row ? mapCourseRow(row) : null
   }
 
+  /**
+   * 快照导入专用：只按 (source='import', externalId) 去重。
+   * 不按名称或平台来源回退匹配，避免把真实学习通课程改写成导入课程。
+   * 同名课程允许共存；导入只新增或更新自己的导入记录。
+   */
   upsertSnapshotCourse(input: {
     externalId: string
     name: string
@@ -1403,10 +1655,7 @@ export class StudyNextStore {
     sourceUrl: string | null
     schedule: CourseSession[]
   }): { course: Course; created: boolean } {
-    const existing =
-      this.findCourseByExternalId('import', input.externalId) ??
-      this.findCourseByExternalId('chaoxing', input.externalId) ??
-      this.findCourseByName(input.name)
+    const existing = this.findCourseByExternalId('import', input.externalId)
     const now = new Date().toISOString()
     if (existing) {
       this.db
@@ -1487,7 +1736,8 @@ export class StudyNextStore {
     const now = new Date().toISOString()
     if (existing) {
       const scheduleJson = input.schedule ? JSON.stringify(input.schedule) : existing.schedule
-      const scheduleValue = typeof scheduleJson === 'string' ? scheduleJson : JSON.stringify(scheduleJson)
+      const scheduleValue =
+        typeof scheduleJson === 'string' ? scheduleJson : JSON.stringify(scheduleJson)
       this.db
         .prepare(
           `UPDATE courses SET name = ?, teacher = ?, semester = ?, source_url = ?,
@@ -1502,7 +1752,9 @@ export class StudyNextStore {
           input.clazzId !== undefined ? input.clazzId : (existing.clazzId ?? null),
           input.className !== undefined ? input.className : (existing.className ?? null),
           scheduleValue,
-          input.semesterStart !== undefined ? input.semesterStart : (existing.semesterStart ?? null),
+          input.semesterStart !== undefined
+            ? input.semesterStart
+            : (existing.semesterStart ?? null),
           input.maxWeek !== undefined ? input.maxWeek : (existing.maxWeek ?? 0),
           now,
           existing.id
@@ -1544,13 +1796,18 @@ export class StudyNextStore {
     return { course, created: true }
   }
 
-  upsertSnapshotChapter(input: {
-    courseId: string
-    externalId: string
-    title: string
-    sortOrder: number
-    progress: number
-  }, source: DataSource = 'import'): { chapter: Chapter; created: boolean } {
+  upsertSnapshotChapter(
+    input: {
+      courseId: string
+      externalId: string
+      title: string
+      sortOrder: number
+      progress: number
+      sourceUrl?: string | null
+      sections?: ChapterSection[]
+    },
+    source: DataSource = 'import'
+  ): { chapter: Chapter; created: boolean } {
     const now = new Date().toISOString()
     const existing = this.db
       .prepare(
@@ -1562,7 +1819,7 @@ export class StudyNextStore {
         .prepare(
           `
           UPDATE course_chapters SET course_id = ?, title = ?, sort_order = ?, progress = ?,
-            updated_at = ? WHERE id = ?
+            source_url = ?, sections_json = ?, updated_at = ? WHERE id = ?
         `
         )
         .run(
@@ -1570,6 +1827,8 @@ export class StudyNextStore {
           input.title.trim(),
           input.sortOrder,
           clampProgress(input.progress),
+          input.sourceUrl ?? existing.source_url ?? null,
+          JSON.stringify(input.sections ?? parseChapterSections(existing.sections_json)),
           now,
           existing.id
         )
@@ -1583,8 +1842,8 @@ export class StudyNextStore {
         `
         INSERT INTO course_chapters
           (id, course_id, external_id, title, sort_order, progress, last_studied_at,
-           source, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+           source_url, sections_json, source, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?)
       `
       )
       .run(
@@ -1594,6 +1853,8 @@ export class StudyNextStore {
         input.title.trim(),
         input.sortOrder,
         clampProgress(input.progress),
+        input.sourceUrl ?? null,
+        JSON.stringify(input.sections ?? []),
         source,
         now,
         now
@@ -1603,16 +1864,19 @@ export class StudyNextStore {
     return { chapter, created: true }
   }
 
-  upsertSnapshotPoint(input: {
-    chapterId: string
-    courseId: string
-    externalId: string
-    title: string
-    kind: StudyPointKind
-    completed: boolean
-    durationMinutes: number | null
-    sortOrder: number
-  }, source: DataSource = 'import'): { point: StudyPoint; created: boolean } {
+  upsertSnapshotPoint(
+    input: {
+      chapterId: string
+      courseId: string
+      externalId: string
+      title: string
+      kind: StudyPointKind
+      completed: boolean
+      durationMinutes: number | null
+      sortOrder: number
+    },
+    source: DataSource = 'import'
+  ): { point: StudyPoint; created: boolean } {
     const now = new Date().toISOString()
     const status = input.completed ? 'done' : 'todo'
     const existing = this.db
@@ -1673,6 +1937,13 @@ export class StudyNextStore {
     return { point, created: true }
   }
 
+  deleteProviderStudyPoints(courseId: string, source: DataSource = 'chaoxing'): number {
+    const result = this.db
+      .prepare('DELETE FROM study_points WHERE course_id = ? AND source = ?')
+      .run(courseId, source)
+    return Number(result.changes)
+  }
+
   getStudyPoint(id: string): StudyPoint | null {
     const row = this.db.prepare('SELECT * FROM study_points WHERE id = ?').get(id) as
       | StudyPointRow
@@ -1720,78 +1991,6 @@ export class StudyNextStore {
     const chapter = this.getChapter(chapterId)
     if (!chapter) throw new UserFacingError('CHAPTER_NOT_FOUND', '章节不存在')
     return chapter
-  }
-
-  listQuestions(): QuestionCard[] {
-    const rows = this.db
-      .prepare('SELECT * FROM questions ORDER BY updated_at DESC, created_at DESC')
-      .all() as unknown as QuestionRow[]
-    return rows.map(mapQuestionRow)
-  }
-
-  createQuestion(input: QuestionInput, source: QuestionSource = 'manual'): QuestionCard {
-    const id = randomUUID()
-    const now = new Date().toISOString()
-    this.db
-      .prepare(
-        `
-        INSERT INTO questions
-          (id, question, answer, explanation, course_id, tags_json, source, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `
-      )
-      .run(
-        id,
-        input.question.trim(),
-        input.answer.trim(),
-        input.explanation.trim(),
-        input.courseId,
-        JSON.stringify(input.tags),
-        source,
-        now,
-        now
-      )
-    const question = this.getQuestion(id)
-    if (!question) throw new UserFacingError('QUESTION_CREATE_FAILED', '题目保存失败')
-    return question
-  }
-
-  getQuestion(id: string): QuestionCard | null {
-    const row = this.db.prepare('SELECT * FROM questions WHERE id = ?').get(id) as
-      | QuestionRow
-      | undefined
-    return row ? mapQuestionRow(row) : null
-  }
-
-  updateQuestion(id: string, input: QuestionInput): QuestionCard {
-    const existing = this.getQuestion(id)
-    if (!existing) throw new UserFacingError('QUESTION_NOT_FOUND', '题目不存在')
-    this.db
-      .prepare(
-        `
-        UPDATE questions SET question = ?, answer = ?, explanation = ?, course_id = ?,
-          tags_json = ?, updated_at = ? WHERE id = ?
-      `
-      )
-      .run(
-        input.question.trim(),
-        input.answer.trim(),
-        input.explanation.trim(),
-        input.courseId,
-        JSON.stringify(input.tags),
-        new Date().toISOString(),
-        id
-      )
-    const question = this.getQuestion(id)
-    if (!question) throw new UserFacingError('QUESTION_NOT_FOUND', '题目不存在')
-    return question
-  }
-
-  deleteQuestion(id: string): void {
-    const result = this.db.prepare('DELETE FROM questions WHERE id = ?').run(id)
-    if (Number(result.changes) === 0) {
-      throw new UserFacingError('QUESTION_NOT_FOUND', '题目不存在')
-    }
   }
 
   listTasks(): Task[] {
@@ -1910,6 +2109,16 @@ export class StudyNextStore {
   updateTask(id: string, input: TaskUpsertInput): Task {
     const previous = this.getTask(id)
     if (!previous) throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
+    if (
+      previous.source === 'chaoxing' &&
+      input.status !== undefined &&
+      input.status !== previous.status
+    ) {
+      throw new UserFacingError(
+        'TASK_PLATFORM_STATUS_LOCKED',
+        '学习通任务的完成状态由平台同步，不能通过本地编辑修改。'
+      )
+    }
     const now = new Date().toISOString()
     const status = input.status ?? previous.status
     const dueAt = new Date(input.dueAt).toISOString()
@@ -1985,6 +2194,14 @@ export class StudyNextStore {
         this.db.prepare('DELETE FROM notification_deliveries WHERE task_id = ?').run(id)
       }
       this.syncReminderRules(id, input.reminderOffsets, now)
+      // A retry row is only valid for the task's current deadline and one of
+      // its current reminder rules. Editing either field invalidates it even
+      // when the failure was recorded for an older schedule.
+      if (status === 'done') {
+        this.deleteTaskDeliveryFailures(id)
+      } else {
+        this.deleteStaleDeliveryFailures(id, dueAt)
+      }
       if (changes.length > 0) {
         this.recordTaskChange(id, 'manual', '手动编辑任务', changes)
       }
@@ -2055,7 +2272,15 @@ export class StudyNextStore {
     }
     const current = taskFieldValueMap(existing)
     const nextValues = { ...current }
-    const protectedFields = new Set(existing.manualFields)
+    // Platform-synced tasks own their completion status. Older builds could
+    // mark `status` as a manual field after a local toggle; drop that stale
+    // protection so the next platform result can repair the local state.
+    const manualFields =
+      source === 'chaoxing'
+        ? existing.manualFields.filter((field) => field !== 'status')
+        : existing.manualFields
+    const manualFieldsDirty = source === 'chaoxing' && existing.manualFields.includes('status')
+    const protectedFields = new Set(manualFields)
     const changes: Array<{ field: TaskField; from: string | null; to: string | null }> = []
     const conflicts: TaskField[] = []
     const fieldSources = { ...existing.fieldSources }
@@ -2070,7 +2295,8 @@ export class StudyNextStore {
       changes.push({ field, from: current[field] || null, to: incoming[field] || null })
       fieldSources[field] = source
     }
-    if (changes.length === 0) {
+    if (source === 'chaoxing') fieldSources.status = 'chaoxing'
+    if (changes.length === 0 && !manualFieldsDirty) {
       const platformChanged =
         options.platformStatus !== undefined && options.platformStatus !== existing.platformStatus
       this.db
@@ -2109,9 +2335,11 @@ export class StudyNextStore {
     const deadlineChanged = changes.some((change) => change.field === 'dueAt')
     const completionSource =
       effectiveStatus === 'done'
-        ? existing.completionSource === 'local'
-          ? 'local'
-          : 'platform'
+        ? source === 'chaoxing'
+          ? 'platform'
+          : existing.completionSource === 'local'
+            ? 'local'
+            : 'platform'
         : null
     const now = new Date().toISOString()
     this.transaction(() => {
@@ -2122,8 +2350,8 @@ export class StudyNextStore {
             title = ?, description = ?, course_id = ?, priority = ?, kind = ?, status = ?,
             due_at = ?, completed_at = ?, completion_source = ?, source_updated_at = ?,
             source_url = ?, platform_status = ?, platform_status_kind = ?, field_sources_json = ?,
-            submitted_at = ?, score = ?, full_score = ?, teacher_feedback = ?, attachments_json = ?,
-            updated_at = ?
+            manual_fields_json = ?, submitted_at = ?, score = ?, full_score = ?,
+            teacher_feedback = ?, attachments_json = ?, updated_at = ?
           WHERE id = ?
         `
         )
@@ -2142,6 +2370,7 @@ export class StudyNextStore {
           options.platformStatus !== undefined ? options.platformStatus : existing.platformStatus,
           options.platformStatusKind ?? existing.platformStatusKind,
           JSON.stringify(fieldSources),
+          JSON.stringify(manualFields),
           options.submittedAt !== undefined ? options.submittedAt : existing.submittedAt,
           options.score !== undefined ? options.score : existing.score,
           options.fullScore !== undefined ? options.fullScore : existing.fullScore,
@@ -2154,6 +2383,13 @@ export class StudyNextStore {
         )
       if (deadlineChanged) {
         this.db.prepare('DELETE FROM notification_deliveries WHERE task_id = ?').run(existing.id)
+      }
+      // Imported tasks do not rewrite their reminder rules, but a platform
+      // deadline change or a completed status still makes an old retry stale.
+      if (effectiveStatus === 'done') {
+        this.deleteTaskDeliveryFailures(existing.id)
+      } else if (deadlineChanged) {
+        this.deleteStaleDeliveryFailures(existing.id, effectiveDueAt)
       }
       this.recordTaskChange(
         existing.id,
@@ -2177,6 +2413,12 @@ export class StudyNextStore {
   setTaskCompleted(id: string, completed: boolean): Task {
     const previous = this.getTask(id)
     if (!previous) throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
+    if (previous.source === 'chaoxing') {
+      throw new UserFacingError(
+        'TASK_PLATFORM_STATUS_LOCKED',
+        '学习通任务的完成状态由平台同步，不能在本地勾选或取消。'
+      )
+    }
     if ((previous.status === 'done') === completed) return previous
     const now = new Date().toISOString()
     const manualFields = mergeTaskFields(previous.manualFields, ['status'])
@@ -2196,6 +2438,9 @@ export class StudyNextStore {
           now,
           id
         )
+      // A completed task must not keep a retry alive. Reopening starts a fresh
+      // reminder lifecycle from the task's current deadline and rules.
+      if (completed) this.deleteTaskDeliveryFailures(id)
       this.recordTaskChange(id, 'manual', completed ? '标记为本地完成' : '取消完成', [
         { field: 'status', from: previous.status, to: completed ? 'done' : 'todo' }
       ])
@@ -2206,10 +2451,39 @@ export class StudyNextStore {
   }
 
   deleteTask(id: string): void {
-    const result = this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
-    if (Number(result.changes) === 0) {
-      throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
+    const previous = this.getTask(id)
+    if (!previous) throw new UserFacingError('TASK_NOT_FOUND', '任务不存在')
+    if (previous.source === 'chaoxing') {
+      throw new UserFacingError(
+        'TASK_PLATFORM_DELETE_LOCKED',
+        '学习通任务由平台同步生成，不能通过本地删除。'
+      )
     }
+    // Explicit cleanup keeps the failure queue correct even before the
+    // foreign-key cascade runs, and never touches another task's rows.
+    this.transaction(() => {
+      this.deleteTaskDeliveryFailures(id)
+      this.db.prepare('DELETE FROM tasks WHERE id = ?').run(id)
+    })
+  }
+
+  private deleteTaskDeliveryFailures(taskId: string): void {
+    this.db.prepare('DELETE FROM notification_delivery_failures WHERE task_id = ?').run(taskId)
+  }
+
+  private deleteStaleDeliveryFailures(taskId: string, dueAt: string): void {
+    this.db
+      .prepare(
+        `
+        DELETE FROM notification_delivery_failures
+        WHERE task_id = ?
+          AND (
+            due_at <> ?
+            OR rule_id NOT IN (SELECT id FROM task_reminders WHERE task_id = ?)
+          )
+      `
+      )
+      .run(taskId, dueAt, taskId)
   }
 
   private recordTaskChange(
@@ -2281,6 +2555,110 @@ export class StudyNextStore {
     this.db.prepare('DELETE FROM notification_deliveries WHERE dedupe_key = ?').run(key)
   }
 
+  /**
+   * Persist a failed delivery attempt separately from the delivery claim. The
+   * claim is released so a retry can be claimed again; this row keeps the
+   * failure and its bounded backoff across process exits.
+   */
+  recordDeliveryFailure(input: {
+    dedupeKey: string
+    taskId: string
+    ruleId: string
+    dueAt: string
+    scheduledFor: string
+    error: string
+    at: string
+    nextRetryAt: string | null
+  }): number {
+    const existing = this.db
+      .prepare('SELECT attempt_count FROM notification_delivery_failures WHERE dedupe_key = ?')
+      .get(input.dedupeKey) as { attempt_count: number } | undefined
+    const attemptCount = (existing?.attempt_count ?? 0) + 1
+    this.db
+      .prepare(
+        `
+        INSERT INTO notification_delivery_failures
+          (dedupe_key, task_id, rule_id, due_at, scheduled_for, attempt_count,
+           last_error, last_attempt_at, next_retry_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(dedupe_key) DO UPDATE SET
+          task_id = excluded.task_id,
+          rule_id = excluded.rule_id,
+          due_at = excluded.due_at,
+          scheduled_for = excluded.scheduled_for,
+          attempt_count = excluded.attempt_count,
+          last_error = excluded.last_error,
+          last_attempt_at = excluded.last_attempt_at,
+          next_retry_at = excluded.next_retry_at
+      `
+      )
+      .run(
+        input.dedupeKey,
+        input.taskId,
+        input.ruleId,
+        input.dueAt,
+        input.scheduledFor,
+        attemptCount,
+        input.error,
+        input.at,
+        input.nextRetryAt
+      )
+    return attemptCount
+  }
+
+  getDeliveryFailure(dedupeKey: string): NotificationDeliveryFailure | null {
+    const row = this.db
+      .prepare('SELECT * FROM notification_delivery_failures WHERE dedupe_key = ?')
+      .get(dedupeKey) as DeliveryFailureRow | undefined
+    return row ? mapDeliveryFailure(row) : null
+  }
+
+  listDueDeliveryFailures(nowIso: string, limit = 50): NotificationDeliveryFailure[] {
+    const rows = this.db
+      .prepare(
+        `
+        SELECT * FROM notification_delivery_failures
+        WHERE next_retry_at IS NOT NULL AND next_retry_at <= ?
+        ORDER BY next_retry_at ASC
+        LIMIT ?
+      `
+      )
+      .all(nowIso, limit) as unknown as DeliveryFailureRow[]
+    return rows.map(mapDeliveryFailure)
+  }
+
+  nextDeliveryRetryAt(): string | null {
+    const row = this.db
+      .prepare(
+        'SELECT MIN(next_retry_at) AS next_retry_at FROM notification_delivery_failures WHERE next_retry_at IS NOT NULL'
+      )
+      .get() as { next_retry_at: string | null } | undefined
+    return row?.next_retry_at ?? null
+  }
+
+  latestDeliveryError(): string | null {
+    const row = this.db
+      .prepare(
+        'SELECT last_error FROM notification_delivery_failures ORDER BY last_attempt_at DESC LIMIT 1'
+      )
+      .get() as { last_error: string } | undefined
+    return row?.last_error ?? null
+  }
+
+  markDeliveryFailureExhausted(dedupeKey: string): void {
+    this.db
+      .prepare(
+        'UPDATE notification_delivery_failures SET next_retry_at = NULL WHERE dedupe_key = ?'
+      )
+      .run(dedupeKey)
+  }
+
+  clearDeliveryFailure(dedupeKey: string): void {
+    this.db
+      .prepare('DELETE FROM notification_delivery_failures WHERE dedupe_key = ?')
+      .run(dedupeKey)
+  }
+
   hasDelivery(taskId: string, ruleId: string, dueAt: string): boolean {
     const row = this.db
       .prepare(
@@ -2305,6 +2683,11 @@ export class StudyNextStore {
         return DEFAULT_SETTINGS[key]
       }
     }
+    const rawZoom = read('uiZoom')
+    const uiZoom =
+      typeof rawZoom === 'number' && Number.isFinite(rawZoom)
+        ? Math.min(1.35, Math.max(0.75, Math.round(rawZoom * 100) / 100))
+        : DEFAULT_SETTINGS.uiZoom
     return {
       theme: read('theme'),
       closeToTray: read('closeToTray'),
@@ -2314,7 +2697,9 @@ export class StudyNextStore {
       calendarWeekStartsOn: read('calendarWeekStartsOn'),
       catchUpMissedReminders: read('catchUpMissedReminders'),
       trustedSsoDomains: read('trustedSsoDomains'),
-      downloadDirectory: read('downloadDirectory')
+      downloadDirectory: read('downloadDirectory'),
+      autoRefreshMinutes: read('autoRefreshMinutes'),
+      uiZoom
     }
   }
 
@@ -2402,6 +2787,9 @@ export class StudyNextStore {
   }
 
   setMeta(key: string, value: string): void {
+    // A read-only historical workspace may still record transient session
+    // metadata in memory, but must never alter the archived database.
+    if (this.readOnly) return
     this.db
       .prepare(
         `
@@ -2416,16 +2804,44 @@ export class StudyNextStore {
     this.db.prepare('INSERT OR IGNORE INTO app_meta(key, value) VALUES (?, ?)').run(key, value)
   }
 
-  private transaction<T>(work: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE')
+  /**
+   * Runs work inside one SQLite transaction. Existing DAO methods call this
+   * recursively; nested calls use SAVEPOINTs so a higher-level sync commit can
+   * atomically include all writes and still roll back the whole batch.
+   */
+  runInTransaction<T>(work: () => T): T {
+    const depth = this.transactionDepth
+    const nested = depth > 0
+    const savepoint = `studynext_sp_${depth + 1}`
+    if (nested) {
+      this.db.exec(`SAVEPOINT ${savepoint}`)
+    } else {
+      this.db.exec('BEGIN IMMEDIATE')
+    }
+    this.transactionDepth = depth + 1
     try {
       const result = work()
-      this.db.exec('COMMIT')
+      if (nested) {
+        this.db.exec(`RELEASE SAVEPOINT ${savepoint}`)
+      } else {
+        this.db.exec('COMMIT')
+      }
       return result
     } catch (error) {
-      this.db.exec('ROLLBACK')
+      if (nested) {
+        this.db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`)
+        this.db.exec(`RELEASE SAVEPOINT ${savepoint}`)
+      } else {
+        this.db.exec('ROLLBACK')
+      }
       throw error
+    } finally {
+      this.transactionDepth = depth
     }
+  }
+
+  private transaction<T>(work: () => T): T {
+    return this.runInTransaction(work)
   }
 }
 
@@ -2667,9 +3083,48 @@ function mapChapterRow(row: ChapterRow): Chapter {
     sortOrder: row.sort_order,
     progress: row.progress,
     lastStudiedAt: row.last_studied_at,
+    sourceUrl: row.source_url ?? null,
+    sections: parseChapterSections(row.sections_json),
     source: row.source as DataSource,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  }
+}
+
+function parseChapterSections(value: string | null | undefined): ChapterSection[] {
+  if (!value) return []
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed
+      .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+      .map((item) => ({
+        number: typeof item.number === 'string' ? item.number : '',
+        title: typeof item.title === 'string' ? item.title : '',
+        completed: item.completed === true,
+        pendingCount: typeof item.pendingCount === 'number' ? item.pendingCount : 0,
+        locked: item.locked === true,
+        chapterId: typeof item.chapterId === 'string' ? item.chapterId : null,
+        sourceUrl: typeof item.sourceUrl === 'string' ? item.sourceUrl : null,
+        resources: Array.isArray(item.resources)
+          ? item.resources
+              .filter(
+                (resource): resource is Record<string, unknown> =>
+                  Boolean(resource) && typeof resource === 'object'
+              )
+              .map((resource) => ({
+                name: typeof resource.name === 'string' ? resource.name : '',
+                size: typeof resource.size === 'string' ? resource.size : null,
+                type: typeof resource.type === 'string' ? resource.type : null,
+                url: typeof resource.url === 'string' ? resource.url : null,
+                objectId: typeof resource.objectId === 'string' ? resource.objectId : null
+              }))
+              .filter((resource) => resource.name.length > 0)
+          : []
+      }))
+      .filter((item) => item.title.length > 0)
+  } catch {
+    return []
   }
 }
 
@@ -2685,28 +3140,6 @@ function mapStudyPointRow(row: StudyPointRow): StudyPoint {
     durationMinutes: row.duration_minutes,
     sortOrder: row.sort_order,
     source: row.source as DataSource,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at
-  }
-}
-
-function mapQuestionRow(row: QuestionRow): QuestionCard {
-  let tags: string[] = []
-  try {
-    const parsed: unknown = JSON.parse(row.tags_json)
-    if (Array.isArray(parsed))
-      tags = parsed.filter((value): value is string => typeof value === 'string')
-  } catch {
-    tags = []
-  }
-  return {
-    id: row.id,
-    question: row.question,
-    answer: row.answer,
-    explanation: row.explanation,
-    courseId: row.course_id,
-    tags,
-    source: row.source as QuestionSource,
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }

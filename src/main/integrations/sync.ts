@@ -70,7 +70,8 @@ export class SyncService {
     return { ...this.status, snapshot: this.readSnapshotInfo() }
   }
 
-  recordSnapshotImport(result: SnapshotImportResult): SyncStatus {    if (result.snapshot) {
+  recordSnapshotImport(result: SnapshotImportResult): SyncStatus {
+    if (result.snapshot) {
       this.store.setMeta(SNAPSHOT_META_KEY, JSON.stringify(result.snapshot))
     }
     const snapshot = this.readSnapshotInfo()
@@ -102,17 +103,23 @@ export class SyncService {
     detail: string | null
     lastSuccessAt: string | null
   }): SyncStatus {
-    const succeeded = result.state === 'success' || result.state === 'partial'
+    const succeeded = result.state === 'success'
     this.status = {
       ...this.status,
       state: result.state,
       message: result.message,
       source: 'chaoxing',
       lastAttemptAt: new Date().toISOString(),
-      lastSuccessAt: succeeded ? result.lastSuccessAt : this.status.lastSuccessAt,
+      // 完整成功时间由会话服务从持久化状态提供；partial/failure 也必须使用
+      // 该值，不能用本实例初始化时的快照时间或空值覆盖跨重启的完整成功记录。
+      lastSuccessAt: result.lastSuccessAt,
       detail:
         result.detail ??
-        (succeeded ? '通过用户本人 Web 登录会话只读同步，不是 OAuth 授权。' : null),
+        (result.state === 'partial'
+          ? '部分数据读取失败；本地旧数据已保留，尚未完成一次完整同步。'
+          : succeeded
+            ? '通过用户本人 Web 登录会话只读同步，不是 OAuth 授权。'
+            : null),
       snapshot: this.readSnapshotInfo()
     }
     return this.getStatus()

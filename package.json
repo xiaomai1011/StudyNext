@@ -1,6 +1,6 @@
 {
   "name": "studynext",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "StudyNext — 现代化学习通桌面客户端",
   "main": "./out/main/index.js",
   "author": "StudyNext Contributors",
@@ -14,7 +14,8 @@
     "test:watch": "vitest",
     "test:e2e": "npm run build && playwright test",
     "build": "npm run typecheck && electron-vite build",
-    "build:win": "npm run build && electron-builder --win nsis",
+    "build:win": "npm run build && electron-builder --win nsis && node scripts/generate-release-manifest.cjs",
+    "verify:release": "node scripts/verify-release.cjs",
     "format:check": "prettier --check .",
     "format": "prettier --write ."
   },

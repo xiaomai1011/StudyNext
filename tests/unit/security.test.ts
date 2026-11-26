@@ -8,6 +8,7 @@ import {
   safeDisplayUrl,
   upgradePortalHttpUrl
 } from '../../src/main/portal/security'
+import { isPortalLoginUrl, normalizePortalTargetUrl } from '@shared/portal-url'
 import { StudyNextStore } from '../../src/main/storage/store'
 import { ChaoxingAuthorizedAdapter, SyncService } from '../../src/main/integrations/sync'
 
@@ -56,6 +57,13 @@ describe('官方页面隔离层', () => {
     expect(upgradePortalHttpUrl('https://i.chaoxing.com/base')).toBeNull()
     expect(upgradePortalHttpUrl('http://evil.example/base')).toBeNull()
     expect(upgradePortalHttpUrl('http://user:pass@i.chaoxing.com/base')).toBeNull()
+    expect(normalizePortalTargetUrl('http://mooc1.chaoxing.com/work?id=1')).toBe(
+      'https://mooc1.chaoxing.com/work?id=1'
+    )
+    expect(normalizePortalTargetUrl('https://evil.example/work')).toBeNull()
+    expect(isPortalLoginUrl('https://passport2.chaoxing.com/login?fid=-1')).toBe(true)
+    expect(isPortalLoginUrl('https://cas.example.edu.cn/cas/login')).toBe(true)
+    expect(isPortalLoginUrl('https://mooc1.chaoxing.com/mooc-ans/work/doHomeWorkNew')).toBe(false)
   })
 
   it('展示 URL 时去除查询参数与 hash，避免泄露令牌', () => {

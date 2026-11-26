@@ -447,7 +447,7 @@ export function importStudySnapshot(
   for (const task of parsed.tasks) {
     let courseId = task.courseExternalId ? (courseIds.get(task.courseExternalId) ?? null) : null
     if (!courseId && task.courseName) {
-      const existing = store.findCourseByName(task.courseName)
+      const existing = store.findCourseByName(task.courseName, 'import')
       if (existing) courseId = existing.id
       else {
         const created = store.createImportedCourse(task.courseName)

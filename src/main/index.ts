@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import {
   app,
   BrowserWindow,
@@ -12,24 +13,36 @@ import {
 } from 'electron'
 import { APP_ID, APP_NAME } from '@shared/constants'
 import { IPC } from '@shared/ipc'
+import {
+  buildReminderToastXml,
+  parseTaskActivationArgument,
+  TASK_ACTIVATION_PROTOCOL
+} from '@shared/task-activation'
 import type {
   AppNotice,
   AppSettings,
+  ChaoxingCredentialStatus,
   NavigateTarget,
   ReminderFiredEvent,
   SyncStatus
 } from '@shared/types'
 import { StudyNextStore } from './storage/store'
+import { WorkspaceManager } from './storage/workspaces'
+import { performAccountSwitch } from './account-switch'
 import {
   createNotificationScheduler,
+  findNextReminderAt,
   formatReminderOffset,
   type NotificationScheduler
 } from './notifications/scheduler'
+import { earliestIso } from './notifications/retry-policy'
+import { runHeadlessReminderCheck } from './notifications/headless'
+import { readCurrentUserSid, SystemReminderService } from './notifications/system-reminder'
+import { openStartupWorkspace } from './startup-workspace'
 import { SyncService } from './integrations/sync'
 import { ChaoxingSessionService } from './integrations/chaoxing/service'
 import { ChaoxingSessionAdapter } from './integrations/chaoxing/adapter'
 import { ChaoxingCredentialStore } from './integrations/chaoxing/credentials'
-import { AiService } from './integrations/ai'
 import { PortalService } from './portal/service'
 import { registerIpc } from './ipc'
 import { errorMessage } from './lib/errors'
@@ -40,14 +53,196 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let store: StudyNextStore | null = null
 let scheduler: NotificationScheduler | null = null
+let systemReminderService: SystemReminderService | null = null
 let portal: PortalService | null = null
+let credentialStore: ChaoxingCredentialStore | null = null
+let workspaceManager: WorkspaceManager | null = null
+let chaoxingService: ChaoxingSessionService | null = null
+let syncService: SyncService | null = null
 let isQuitting = false
+let switchingAccount = false
 let stopWindowStateTracking: (() => void) | null = null
+let lastAppliedUiZoom = 1
+let pendingFocusTaskId: string | null = null
+let rendererReady = false
 
 const startHidden = process.argv.includes('--hidden')
+const headlessReminderCheck = process.argv.includes('--check-reminders')
+const installSystemReminders = process.argv.includes('--install-reminders')
+const uninstallSystemReminders = process.argv.includes('--uninstall-reminders')
+const startupFocusTaskId = parseTaskActivationArgument(process.argv)
 
 app.setName(APP_NAME)
 app.setAppUserModelId(APP_ID)
+
+function registerProtocolClient(): boolean {
+  if (app.isPackaged) {
+    return app.setAsDefaultProtocolClient(TASK_ACTIVATION_PROTOCOL)
+  }
+  return app.setAsDefaultProtocolClient(TASK_ACTIVATION_PROTOCOL, process.execPath, [
+    app.getAppPath()
+  ])
+}
+
+function removeProtocolClient(): boolean {
+  return app.removeAsDefaultProtocolClient(TASK_ACTIVATION_PROTOCOL)
+}
+
+async function runHeadlessReminderProcess(): Promise<void> {
+  const dataPath = app.getPath('userData')
+  const context = await openStartupWorkspace(dataPath)
+  if (context.store.readOnly) {
+    context.store.close()
+    app.exit(0)
+    return
+  }
+  const systemReminder = new SystemReminderService({
+    dataDir: dataPath,
+    executablePath: process.execPath,
+    packaged: app.isPackaged,
+    sid: readCurrentUserSid()
+  })
+  const notifications: Notification[] = []
+  let exitCode = 0
+  try {
+    await systemReminder.initialize()
+    const settings = context.store.getSettings()
+    const result = await runHeadlessReminderCheck({
+      store: context.store,
+      notify: async (event) => {
+        const notification = await showHeadlessReminderNotification(event)
+        notifications.push(notification)
+      }
+    })
+    // A successful retry clears its own store row. The service error is always
+    // read back from the durable queue, not inferred from this run's errors.
+    const error =
+      context.store.latestDeliveryError() ??
+      (result.errors.length > 0 ? result.errors.slice(0, 3).join('；') : null)
+    systemReminder.recordCheck({
+      at: result.checkedAt,
+      delivered: result.delivered,
+      error
+    })
+    await systemReminder.syncNextTrigger({
+      enabled: settings.notificationsEnabled,
+      nextRunAt: result.nextReminderAt
+    })
+    if (result.failed > 0) exitCode = 1
+  } catch (error) {
+    exitCode = 1
+    systemReminder.recordCheck({ error: errorMessage(error) })
+    console.error(`[headless] ${errorMessage(error)}`)
+  } finally {
+    context.store.close()
+  }
+  if (notifications.length > 0) await delay(10_000)
+  app.exit(exitCode)
+}
+
+async function runInstallSystemRemindersProcess(): Promise<void> {
+  const dataPath = app.getPath('userData')
+  const context = await openStartupWorkspace(dataPath)
+  let exitCode = 0
+  try {
+    if (context.store.readOnly) {
+      throw new Error('当前数据目录为只读历史工作区，未注册系统级提醒')
+    }
+    const service = new SystemReminderService({
+      dataDir: dataPath,
+      executablePath: process.execPath,
+      packaged: app.isPackaged,
+      sid: readCurrentUserSid()
+    })
+    await service.initialize()
+    const settings = context.store.getSettings()
+    const nextRunAt = settings.notificationsEnabled
+      ? earliestIso([
+          findNextReminderAt(context.store.listTasks()),
+          context.store.nextDeliveryRetryAt()
+        ])
+      : null
+    await service.syncNextTrigger({
+      enabled: settings.notificationsEnabled,
+      nextRunAt
+    })
+  } catch (error) {
+    exitCode = 1
+    console.error(`[install-reminders] ${errorMessage(error)}`)
+  } finally {
+    context.store.close()
+  }
+  app.exit(exitCode)
+}
+
+async function runUninstallSystemRemindersProcess(): Promise<void> {
+  try {
+    const service = new SystemReminderService({
+      dataDir: app.getPath('userData'),
+      executablePath: process.execPath,
+      packaged: app.isPackaged,
+      sid: readCurrentUserSid()
+    })
+    await service.initialize()
+    await service.removeAllOwnedTasks()
+    removeProtocolClient()
+  } catch (error) {
+    console.error(`[uninstall-reminders] ${errorMessage(error)}`)
+    app.exit(1)
+    return
+  }
+  app.exit(0)
+}
+
+function showHeadlessReminderNotification(event: ReminderFiredEvent): Promise<Notification> {
+  if (!Notification.isSupported()) {
+    return Promise.reject(new Error('当前系统不支持桌面通知'))
+  }
+  const due = new Date(event.dueAt)
+  const dueLabel = new Intl.DateTimeFormat('zh-CN', {
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(due)
+  const course = event.courseName ? `【${event.courseName}】` : ''
+  // Protocol activation, not a click callback: the headless process exits
+  // before the user can interact with the Windows Action Center.
+  const notification = new Notification({
+    toastXml: buildReminderToastXml({
+      title: `学习提醒 · ${formatReminderOffset(event.offsetMinutes)}`,
+      body: `${course}《${event.taskTitle}》将于 ${dueLabel} 截止`,
+      taskId: event.taskId,
+      iconPath: pathToFileURL(resourcePath('icon.png')).toString()
+    })
+  })
+  return new Promise((resolve, reject) => {
+    let settled = false
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      reject(new Error('系统通知未在预期时间内显示'))
+    }, 4_000)
+    notification.once('show', () => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(notification)
+    })
+    notification.once('failed', (_event, error) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(new Error(error || '系统通知创建失败'))
+    })
+    notification.show()
+  })
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function resolveUserDataPath(): string {
   return ensureUserDataDirectory(
@@ -68,53 +263,120 @@ try {
   startupError = error instanceof Error ? error : new Error(String(error))
 }
 
-const gotLock = startupError ? false : app.requestSingleInstanceLock()
-if (startupError) {
-  void app.whenReady().then(() => {
-    dialog.showErrorBox(
-      'StudyNext 无法启动',
-      `${startupError?.message ?? '本地数据目录不可用'}\n\n应用不会回退到临时目录，以免关闭后丢失课程和任务数据。`
-    )
-    app.quit()
-  })
-} else if (!gotLock) {
-  app.quit()
+if (headlessReminderCheck || installSystemReminders || uninstallSystemReminders) {
+  const mode = headlessReminderCheck
+    ? 'headless'
+    : installSystemReminders
+      ? 'install-reminders'
+      : 'uninstall-reminders'
+  const run = headlessReminderCheck
+    ? runHeadlessReminderProcess
+    : installSystemReminders
+      ? runInstallSystemRemindersProcess
+      : runUninstallSystemRemindersProcess
+  if (startupError) {
+    console.error(`[${mode}] ${startupError.message}`)
+    app.exit(1)
+  } else {
+    app
+      .whenReady()
+      .then(() => {
+        if (!uninstallSystemReminders) registerProtocolClient()
+        return run()
+      })
+      .catch((error: unknown) => {
+        console.error(`[${mode}] ${errorMessage(error)}`)
+        app.exit(1)
+      })
+  }
 } else {
-  app.on('second-instance', () => {
-    showMainWindow()
-  })
-  app
-    .whenReady()
-    .then(initialize)
-    .catch((error: unknown) => {
-      console.error(`[startup] ${errorMessage(error)}`)
-      dialog.showErrorBox('StudyNext 无法完成初始化', errorMessage(error))
+  const gotLock = startupError ? false : app.requestSingleInstanceLock()
+  if (startupError) {
+    void app.whenReady().then(() => {
+      dialog.showErrorBox(
+        'StudyNext 无法启动',
+        `${startupError?.message ?? '本地数据目录不可用'}\n\n应用不会回退到临时目录，以免关闭后丢失课程和任务数据。`
+      )
       app.quit()
     })
+  } else if (!gotLock) {
+    app.quit()
+  } else {
+    app.on('second-instance', (_event, argv) => {
+      const taskId = parseTaskActivationArgument(argv)
+      if (taskId) focusTaskInWindow(taskId)
+      else showMainWindow()
+    })
+    app
+      .whenReady()
+      .then(() => {
+        registerProtocolClient()
+        return initialize()
+      })
+      .catch((error: unknown) => {
+        console.error(`[startup] ${errorMessage(error)}`)
+        dialog.showErrorBox('StudyNext 无法完成初始化', errorMessage(error))
+        app.quit()
+      })
+  }
 }
 
 async function initialize(): Promise<void> {
   const dataPath = app.getPath('userData')
-  store = new StudyNextStore(join(dataPath, 'studynext.sqlite'))
   const credentials = new ChaoxingCredentialStore()
+  const workspaces = new WorkspaceManager(dataPath)
+  credentialStore = credentials
+  workspaceManager = workspaces
+  const credentialStatus = await credentials.status()
+  const activeAccount = credentialStatus.activeAccountId
+    ? credentialStatus.accounts.find((item) => item.id === credentialStatus.activeAccountId)
+    : null
+  const verifiedAccount = activeAccount?.platformUid
+    ? {
+        id: activeAccount.id,
+        platformUid: activeAccount.platformUid,
+        displayName: activeAccount.displayName,
+        school: activeAccount.school
+      }
+    : null
+  const startupWorkspace = workspaces.resolveStartupWorkspace(verifiedAccount, {
+    legacyPath: join(dataPath, 'studynext.sqlite')
+  })
+  if (
+    verifiedAccount &&
+    startupWorkspace.status !== 'readonly' &&
+    (startupWorkspace.accountId !== verifiedAccount.id ||
+      startupWorkspace.platformUid !== verifiedAccount.platformUid)
+  ) {
+    throw new Error('当前账号身份与启动数据库不一致，已阻止加载可写数据库')
+  }
+  workspaces.clearPendingSwitch()
+  store = new StudyNextStore(startupWorkspace.filePath, {
+    workspaceId: startupWorkspace.id,
+    accountId: startupWorkspace.accountId,
+    readOnly: startupWorkspace.status === 'readonly'
+  })
   portal = new PortalService(
     store,
     () => mainWindow,
-    () => credentials.load()
+    (accountId) => (accountId ? credentials.loadAccount(accountId) : credentials.load())
   )
 
   const notices = buildDemoNotices()
   const sync = new SyncService(store)
+  syncService = sync
   const chaoxing = new ChaoxingSessionService(
     store,
     new ChaoxingSessionAdapter(
       undefined,
-      () => (portal ? portal.ensureCoursePageHtml() : Promise.resolve(null)),
-      () => (portal ? portal.readScheduleFromPage() : Promise.resolve(null)),
-      () => (portal ? portal.readExamListFromPage() : Promise.resolve(null)),
-      (courseUrl) => (portal ? portal.readChapterHtml(courseUrl) : Promise.resolve(null)),
-      () => (portal ? portal.readNoticeListFromPage() : Promise.resolve(null)),
-      (courseUrl) => (portal ? portal.readMaterialHtml(courseUrl) : Promise.resolve(null))
+      (signal) => (portal ? portal.ensureCoursePageHtml(signal) : Promise.resolve(null)),
+      (signal) => (portal ? portal.readScheduleFromPage(signal) : Promise.resolve(null)),
+      (signal) => (portal ? portal.readExamListFromPage(signal) : Promise.resolve(null)),
+      (courseUrl, signal) =>
+        portal ? portal.readChapterHtml(courseUrl, signal) : Promise.resolve(null),
+      (signal) => (portal ? portal.readNoticeListFromPage(signal) : Promise.resolve(null)),
+      (courseUrl, signal) =>
+        portal ? portal.readMaterialHtml(courseUrl, signal) : Promise.resolve(null)
     ),
     (outcome) => {
       sync.recordSessionResult(outcome)
@@ -124,16 +386,52 @@ async function initialize(): Promise<void> {
         mainWindow.webContents.send(IPC.chaoxingSyncProgress, event)
       }
     },
-    portal.createSyncNavigationGuard()
+    portal.createSyncNavigationGuard(),
+    (uid) => (portal ? portal.readAvatarDataUrl(uid) : Promise.resolve(null)),
+    (event) => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send(IPC.chaoxingAvatarUpdated, event)
+      }
+    }
   )
-  const ai = new AiService(store)
-  scheduler = createNotificationScheduler({
+  chaoxingService = chaoxing
+  if (!store.readOnly) {
+    systemReminderService = new SystemReminderService({
+      dataDir: dataPath,
+      executablePath: process.execPath,
+      packaged: app.isPackaged,
+      sid: readCurrentUserSid()
+    })
+    await systemReminderService.initialize()
+  }
+  const processScheduler = createNotificationScheduler({
     store,
     notify: (event) => showReminderNotification(event),
     onSchedulerEvent: (event) => {
       mainWindow?.webContents.send('event:reminder', event)
+    },
+    onSchedulerSettled: () => {
+      // A delivery attempt can create a retry row or consume the current
+      // one-shot trigger. Reposition the Windows task immediately so an app
+      // quit right after the attempt cannot strand the retry.
+      syncSystemReminderTrigger()
     }
   })
+  const notificationScheduler: NotificationScheduler = {
+    start: () => {
+      const count = processScheduler.start()
+      syncSystemReminderTrigger()
+      return count
+    },
+    stop: () => processScheduler.stop(),
+    refresh: () => {
+      processScheduler.refresh()
+      syncSystemReminderTrigger()
+    },
+    getStartupCatchUpCount: () => processScheduler.getStartupCatchUpCount(),
+    getNextReminderAt: () => processScheduler.getNextReminderAt()
+  }
+  scheduler = notificationScheduler
 
   createMainWindow()
   createTray()
@@ -143,32 +441,52 @@ async function initialize(): Promise<void> {
 
   registerIpc({
     store,
-    scheduler,
+    scheduler: notificationScheduler,
+    systemReminder: systemReminderService,
     sync,
     chaoxing,
     credentials,
-    ai,
+    workspaces: workspaceManager ?? workspaces,
     portal,
     getWindow: () => mainWindow,
     appInfo: {
       version: app.getVersion(),
       platform: process.platform,
       dataPath,
-      isPackaged: app.isPackaged
+      isPackaged: app.isPackaged,
+      workspace: {
+        id: startupWorkspace.id,
+        mode:
+          startupWorkspace.status === 'readonly'
+            ? 'readonly'
+            : startupWorkspace.accountId === 'local'
+              ? 'local'
+              : 'account',
+        accountId: startupWorkspace.accountId === 'local' ? null : startupWorkspace.accountId
+      }
     },
     notices,
+    isSwitchingAccount: () => switchingAccount,
+    requestAccountSwitch: (accountId) => requestAccountSwitch(accountId),
+    requestRestartToSafeWorkspace: () => requestRestartToSafeWorkspace(),
+    requestRestartForAccount: (accountId) => requestRestartForAccount(accountId),
     onSettingsChanged: (next) => {
       applySettings(next)
+      syncSystemReminderTrigger()
     },
     onTestNotification: () => {
       showTestNotification()
+    },
+    onRendererReady: () => {
+      rendererReady = true
+      flushPendingFocusTask()
     },
     onDemoReset: () => {
       scheduler?.refresh()
     }
   })
 
-  scheduler.start()
+  if (!store.readOnly) notificationScheduler.start()
   if (!Notification.isSupported()) {
     console.warn('[notifications] 系统通知不可用，DDL 提醒仍会在应用内触发')
   }
@@ -179,10 +497,105 @@ async function initialize(): Promise<void> {
   })
 }
 
+async function requestAccountSwitch(accountId: string): Promise<ChaoxingCredentialStatus> {
+  const credentials = credentialStore
+  const workspaces = workspaceManager
+  const currentPortal = portal
+  if (!credentials || !workspaces || !currentPortal || !chaoxingService) {
+    throw new Error('应用尚未完成初始化')
+  }
+  if (switchingAccount) throw new Error('账号切换正在进行，请稍候')
+  switchingAccount = true
+  try {
+    return await performAccountSwitch(
+      {
+        credentials,
+        workspaces,
+        portal: currentPortal,
+        chaoxing: chaoxingService,
+        stopScheduler: () => scheduler?.stop(),
+        requestRelaunch: scheduleRelaunch
+      },
+      accountId
+    )
+  } catch (error) {
+    switchingAccount = false
+    throw error
+  }
+}
+
+async function requestRestartForAccount(accountId: string): Promise<ChaoxingCredentialStatus> {
+  const credentials = credentialStore
+  const workspaces = workspaceManager
+  if (!credentials || !workspaces) throw new Error('应用尚未完成初始化')
+  if (switchingAccount) throw new Error('账号切换正在进行，请稍候')
+  const before = await credentials.status()
+  const account = before.accounts.find((item) => item.id === accountId)
+  if (!account?.platformUid) throw new Error('账号尚未完成平台身份校验，无法加载工作区')
+  switchingAccount = true
+  try {
+    chaoxingService?.resetForAccountSwitch()
+    scheduler?.stop()
+    portal?.suspendWritesForAccountSwitch()
+    const workspace = workspaces.beginAccountSwitch({
+      id: account.id,
+      platformUid: account.platformUid,
+      displayName: account.displayName,
+      school: account.school
+    })
+    workspaces.setActive(workspace.id)
+    await credentials.setActive(account.id)
+    scheduleRelaunch()
+    return credentials.status()
+  } catch (error) {
+    switchingAccount = false
+    throw error
+  }
+}
+
+async function requestRestartToSafeWorkspace(): Promise<ChaoxingCredentialStatus> {
+  const credentials = credentialStore
+  const workspaces = workspaceManager
+  if (!credentials || !workspaces) throw new Error('应用尚未完成初始化')
+  if (switchingAccount) throw new Error('账号切换正在进行，请稍候')
+  switchingAccount = true
+  try {
+    chaoxingService?.resetForAccountSwitch()
+    scheduler?.stop()
+    portal?.suspendWritesForAccountSwitch()
+    await portal?.clearSession()
+    const safe = workspaces.resolveStartupWorkspace(null, {
+      legacyPath: join(app.getPath('userData'), 'studynext.sqlite')
+    })
+    workspaces.setActive(safe.id)
+    scheduleRelaunch()
+    return credentials.status()
+  } catch (error) {
+    switchingAccount = false
+    throw error
+  }
+}
+
+function scheduleRelaunch(): void {
+  if (process.env.STUDYNEXT_TEST_NO_RELAUNCH === '1') return
+  setTimeout(() => {
+    isQuitting = true
+    app.relaunch()
+    app.exit(0)
+  }, 700)
+}
+
 function createMainWindow(): void {
   if (!store) return
+  if (startupFocusTaskId) pendingFocusTaskId = startupFocusTaskId
   const state = loadWindowState(join(app.getPath('userData'), 'window-state.json'))
   const iconPath = resourcePath('icon.png')
+  const initialSettings = store.getSettings()
+  const initialDark =
+    initialSettings.theme === 'dark' ||
+    (initialSettings.theme === 'system' && nativeTheme.shouldUseDarkColors)
+  const initialZoom = initialSettings.uiZoom
+  lastAppliedUiZoom = initialZoom
   mainWindow = new BrowserWindow({
     ...(state.x !== undefined ? { x: state.x } : {}),
     ...(state.y !== undefined ? { y: state.y } : {}),
@@ -193,7 +606,7 @@ function createMainWindow(): void {
     show: false,
     frame: false,
     title: APP_NAME,
-    backgroundColor: '#0c1222',
+    backgroundColor: initialDark ? '#0b0d11' : '#f1f0ec',
     icon: iconPath,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -213,6 +626,9 @@ function createMainWindow(): void {
 
   mainWindow.once('ready-to-show', () => {
     if (!mainWindow) return
+    if (initialZoom !== 1) {
+      mainWindow.webContents.setZoomFactor(initialZoom)
+    }
     if (state.maximized) mainWindow.maximize()
     if (!startHidden) {
       mainWindow.show()
@@ -255,6 +671,16 @@ function createMainWindow(): void {
     event.preventDefault()
   })
 
+  rendererReady = false
+  mainWindow.webContents.on('did-start-loading', () => {
+    rendererReady = false
+  })
+  mainWindow.webContents.on('did-finish-load', () => {
+    // The renderer still needs to mount its React listeners; it calls
+    // app:renderer-ready when that handshake is complete.
+    if (rendererReady) flushPendingFocusTask()
+  })
+
   if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) {
     void mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {
@@ -265,9 +691,7 @@ function createMainWindow(): void {
 function createTray(): void {
   if (tray) return
   const image = nativeImage.createFromPath(resourcePath('tray.png'))
-  tray = new Tray(
-    image.isEmpty() ? nativeImage.createEmpty() : image.resize({ width: 16, height: 16 })
-  )
+  tray = new Tray(image.isEmpty() ? nativeImage.createEmpty() : image)
   tray.setToolTip(`${APP_NAME} · 学习安排一目了然`)
   tray.on('click', () => {
     if (mainWindow?.isVisible()) mainWindow.hide()
@@ -341,15 +765,55 @@ function showMainWindow(): void {
   mainWindow.focus()
 }
 
+function focusTaskInWindow(taskId: string): void {
+  if (!mainWindow) {
+    pendingFocusTaskId = taskId
+    createMainWindow()
+    return
+  }
+  pendingFocusTaskId = taskId
+  showMainWindow()
+  flushPendingFocusTask()
+}
+
+function flushPendingFocusTask(): void {
+  const taskId = pendingFocusTaskId
+  if (!taskId || !mainWindow || mainWindow.isDestroyed()) return
+  if (!rendererReady || mainWindow.webContents.isLoadingMainFrame()) return
+  pendingFocusTaskId = null
+  showMainWindow()
+  sendNavigate('tasks')
+  mainWindow.webContents.send('event:focus-task', taskId)
+}
+
 function sendNavigate(target: NavigateTarget): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   mainWindow.webContents.send('event:navigate', target)
 }
 
+function syncSystemReminderTrigger(): void {
+  if (!store || !systemReminderService) return
+  const settings = store.getSettings()
+  void systemReminderService
+    .syncNextTrigger({
+      enabled: settings.notificationsEnabled,
+      nextRunAt: earliestIso([findNextReminderAt(store.listTasks()), store.nextDeliveryRetryAt()])
+    })
+    .catch((error: unknown) => {
+      console.warn(`[notifications] 系统级提醒注册失败：${errorMessage(error)}`)
+    })
+}
+
 function applySettings(settings: AppSettings): void {
   nativeTheme.themeSource = settings.theme
-  if (mainWindow) {
-    mainWindow.setBackgroundColor(settings.theme === 'dark' ? '#0c1222' : '#f5f7fb')
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const isDark =
+      settings.theme === 'dark' || (settings.theme === 'system' && nativeTheme.shouldUseDarkColors)
+    mainWindow.setBackgroundColor(isDark ? '#0b0d11' : '#f1f0ec')
+    if (settings.uiZoom !== lastAppliedUiZoom) {
+      lastAppliedUiZoom = settings.uiZoom
+      mainWindow.webContents.setZoomFactor(settings.uiZoom)
+    }
   }
   if (app.isPackaged) {
     app.setLoginItemSettings({
@@ -376,7 +840,7 @@ function showReminderNotification(event: ReminderFiredEvent): void {
   }).format(due)
   const notification = new Notification({
     title: `学习提醒 · ${formatReminderOffset(event.offsetMinutes)}`,
-    body: `《${event.taskTitle}》将于 ${dueLabel} 截止`,
+    body: `${event.courseName ? `【${event.courseName}】` : ''}《${event.taskTitle}》将于 ${dueLabel} 截止`,
     icon: resourcePath('icon.png')
   })
   notification.on('click', () => {

@@ -1,7 +1,8 @@
 import { REMINDER_PRESETS } from '@shared/constants'
 import { isDueAtUnknown } from '@shared/domain'
 import type { ReminderFiredEvent, Task } from '@shared/types'
-import type { StudyNextStore } from '../storage/store'
+import type { NotificationDeliveryFailure, StudyNextStore } from '../storage/store'
+import { decideDeliveryRetry, earliestIso } from './retry-policy'
 
 export interface ReminderCandidate {
   task: Task
@@ -15,6 +16,13 @@ export interface ReminderSchedulerOptions {
   store: StudyNextStore
   notify: (event: ReminderFiredEvent) => void
   onSchedulerEvent?: (event: ReminderFiredEvent) => void
+  /**
+   * Called after at least one notification attempt settled. The main process
+   * uses this to move the Windows one-shot task to the next normal reminder or
+   * retry time; otherwise an in-process failure could leave no trigger behind
+   * after the app closes.
+   */
+  onSchedulerSettled?: () => void
   tickMs?: number
   catchUpWindowMs?: number
   lateWindowMs?: number
@@ -45,6 +53,42 @@ export function formatReminderOffset(offsetMinutes: number): string {
   if (offsetMinutes % 1440 === 0) return `提前 ${offsetMinutes / 1440} 天`
   if (offsetMinutes % 60 === 0) return `提前 ${offsetMinutes / 60} 小时`
   return `提前 ${offsetMinutes} 分钟`
+}
+
+export function reminderCandidateKey(candidate: ReminderCandidate): string {
+  return `${candidate.task.id}:${candidate.ruleId}:${candidate.dueAt}`
+}
+
+/**
+ * Rebuild a candidate from a persisted delivery failure. The task, rule and
+ * deadline are re-read from SQLite: an external activation ID or a stale retry
+ * row is never trusted on its own.
+ */
+export function reminderCandidateFromFailure(
+  failure: NotificationDeliveryFailure,
+  tasks: Map<string, Task>,
+  now: Date
+): ReminderCandidate | null {
+  const task = tasks.get(failure.taskId)
+  if (!task || task.status !== 'todo') return null
+  const rule = task.reminders.find((item) => item.id === failure.ruleId)
+  if (!rule || !rule.enabled) return null
+  // The retry row must still describe this task's current schedule. A deadline
+  // edit, a replaced reminder rule, or a row left behind by an interrupted
+  // update must never replay the old notification.
+  if (failure.dueAt !== task.dueAt) return null
+  const dueMs = Date.parse(task.dueAt)
+  if (!Number.isFinite(dueMs) || dueMs <= now.getTime()) return null
+  const scheduledFor = new Date(dueMs - rule.offsetMinutes * 60_000).toISOString()
+  if (failure.scheduledFor !== scheduledFor) return null
+  if (failure.dedupeKey !== `${task.id}:${rule.id}:${task.dueAt}`) return null
+  return {
+    task,
+    ruleId: rule.id,
+    offsetMinutes: rule.offsetMinutes,
+    scheduledFor,
+    dueAt: task.dueAt
+  }
 }
 
 export function findDueReminderCandidates(
@@ -123,11 +167,7 @@ export class ReminderScheduler implements NotificationScheduler {
       this.startupCatchUpCount = 0
     } else {
       this.startupCatchUpCount = this.deliver(
-        findDueReminderCandidates(this.options.store.listTasks(), this.now(), {
-          catchUp: settings.catchUpMissedReminders,
-          catchUpWindowMs: this.catchUpWindowMs,
-          lateWindowMs: this.lateWindowMs
-        }),
+        this.collectCandidates(this.now(), settings.catchUpMissedReminders),
         true
       )
     }
@@ -155,24 +195,44 @@ export class ReminderScheduler implements NotificationScheduler {
   }
 
   getNextReminderAt(): string | null {
-    return findNextReminderAt(this.options.store.listTasks(), this.now())
+    return earliestIso([
+      findNextReminderAt(this.options.store.listTasks(), this.now()),
+      this.options.store.nextDeliveryRetryAt()
+    ])
   }
 
   private tick(): void {
     const settings = this.options.store.getSettings()
     if (!settings.notificationsEnabled) return
-    this.deliver(
-      findDueReminderCandidates(this.options.store.listTasks(), this.now(), {
-        catchUp: false,
-        catchUpWindowMs: this.catchUpWindowMs,
-        lateWindowMs: this.lateWindowMs
-      }),
-      false
-    )
+    this.deliver(this.collectCandidates(this.now(), false), false)
+  }
+
+  private collectCandidates(now: Date, catchUp: boolean): ReminderCandidate[] {
+    const tasks = this.options.store.listTasks()
+    const tasksById = new Map(tasks.map((task) => [task.id, task]))
+    const candidates = new Map<string, ReminderCandidate>()
+    for (const candidate of findDueReminderCandidates(tasks, now, {
+      catchUp,
+      catchUpWindowMs: this.catchUpWindowMs,
+      lateWindowMs: this.lateWindowMs
+    })) {
+      candidates.set(reminderCandidateKey(candidate), candidate)
+    }
+    for (const failure of this.options.store.listDueDeliveryFailures(now.toISOString())) {
+      if (candidates.has(failure.dedupeKey)) continue
+      const candidate = reminderCandidateFromFailure(failure, tasksById, now)
+      if (!candidate) {
+        this.options.store.markDeliveryFailureExhausted(failure.dedupeKey)
+        continue
+      }
+      candidates.set(reminderCandidateKey(candidate), candidate)
+    }
+    return [...candidates.values()]
   }
 
   private deliver(candidates: ReminderCandidate[], startup: boolean): number {
     let delivered = 0
+    let attempted = false
     for (const candidate of candidates) {
       const existing = this.options.store.hasDelivery(
         candidate.task.id,
@@ -180,28 +240,54 @@ export class ReminderScheduler implements NotificationScheduler {
         candidate.dueAt
       )
       if (existing) continue
-      const key = this.options.store.claimDelivery({
+      const key = reminderCandidateKey(candidate)
+      const failure = this.options.store.getDeliveryFailure(key)
+      if (failure?.nextRetryAt === null) continue
+      if (failure?.nextRetryAt && Date.parse(failure.nextRetryAt) > this.now().getTime()) {
+        continue
+      }
+      const claim = this.options.store.claimDelivery({
         taskId: candidate.task.id,
         ruleId: candidate.ruleId,
         dueAt: candidate.dueAt,
         scheduledFor: candidate.scheduledFor
       })
-      if (!key) continue
+      if (!claim) continue
+      attempted = true
+      const firedAt = this.now()
       const event: ReminderFiredEvent = {
         taskId: candidate.task.id,
         taskTitle: candidate.task.title,
         dueAt: candidate.dueAt,
         offsetMinutes: candidate.offsetMinutes,
-        firedAt: this.now().toISOString()
+        firedAt: firedAt.toISOString()
       }
       try {
         this.options.notify(event)
         this.options.onSchedulerEvent?.(event)
+        this.options.store.clearDeliveryFailure(key)
         delivered += 1
-      } catch {
-        this.options.store.releaseDelivery(key)
+      } catch (error) {
+        this.options.store.releaseDelivery(claim)
+        const attemptCount = (this.options.store.getDeliveryFailure(key)?.attemptCount ?? 0) + 1
+        const retry = decideDeliveryRetry({
+          attemptCount,
+          dueAt: candidate.dueAt,
+          now: firedAt
+        })
+        this.options.store.recordDeliveryFailure({
+          dedupeKey: key,
+          taskId: candidate.task.id,
+          ruleId: candidate.ruleId,
+          dueAt: candidate.dueAt,
+          scheduledFor: candidate.scheduledFor,
+          error: error instanceof Error ? error.message : String(error),
+          at: firedAt.toISOString(),
+          nextRetryAt: retry.nextRetryAt
+        })
       }
     }
+    if (attempted) this.options.onSchedulerSettled?.()
     if (startup) return delivered
     return delivered
   }

@@ -1,0 +1,185 @@
+/* StudyNext Design Tokens — Quiet Architectural Studio
+   Precision desktop density (13px body, 30px controls, crisp 100% baseline)
+   Paired with full user-adjustable Chromium uiZoom (75%–135%).
+   Split text accent vs solid button fill ensures WCAG AA (>= 4.5:1) in both themes. */
+
+:root {
+  /* Fonts */
+  --ds-font-ui:
+    'Inter', 'HarmonyOS Sans SC', 'PingFang SC', 'Microsoft YaHei UI', 'Segoe UI Variable',
+    'Segoe UI', system-ui, -apple-system, sans-serif;
+  --ds-font-display: var(--ds-font-ui);
+  --ds-font-mono: 'JetBrains Mono', 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+
+  /* Precision desktop typography scale (11px functional floor) */
+  --ds-text-xs: 11px;
+  --ds-text-sm: 12px;
+  --ds-text-base: 13px;
+  --ds-text-md: 14px;
+  --ds-text-lg: 15.5px;
+  --ds-text-xl: 18px;
+  --ds-text-display: 22px;
+
+  --ds-weight-medium: 520;
+  --ds-weight-semibold: 620;
+
+  --ds-leading-tight: 1.24;
+  --ds-leading-snug: 1.38;
+  --ds-leading-normal: 1.5;
+
+  /* Spacing rhythm */
+  --ds-space-1: 4px;
+  --ds-space-2: 8px;
+  --ds-space-3: 12px;
+  --ds-space-4: 16px;
+  --ds-space-5: 20px;
+  --ds-space-6: 24px;
+  --ds-space-7: 30px;
+
+  /* Radii */
+  --ds-radius-xs: 5px;
+  --ds-radius-sm: 6px;
+  --ds-radius-md: 9px;
+  --ds-radius-lg: 12px;
+  --ds-radius-xl: 14px;
+  --ds-radius-pill: 999px;
+
+  /* Control heights */
+  --ds-control-sm: 26px;
+  --ds-control-md: 30px;
+  --ds-control-lg: 34px;
+
+  /* Light Palette — Alabaster Paper & Ceramic White + Swiss Cobalt */
+  --ds-bg: #f1f0ec;
+  --ds-bg-subtle: #e9e7e1;
+  --ds-canvas: #fbfbf9;
+  --ds-surface: #ffffff;
+  --ds-surface-muted: #f5f4f0;
+  --ds-surface-hover: #eeede7;
+  --ds-surface-active: #e6e5de;
+
+  --ds-border: rgba(20, 24, 33, 0.085);
+  --ds-border-strong: rgba(20, 24, 33, 0.16);
+  --ds-border-subtle: rgba(20, 24, 33, 0.055);
+  --ds-rim-top: rgba(255, 255, 255, 0.8);
+
+  --ds-text: #14171f;
+  --ds-text-secondary: #485060;
+  --ds-text-soft: #485060;
+  --ds-text-muted: #5a6375;
+  --ds-text-faint: #616a7c;
+
+  --ds-accent: #2558d9;
+  --ds-accent-solid: #2558d9;
+  --ds-accent-hover: #1d49b8;
+  --ds-accent-strong: #1d49b8;
+  --ds-accent-on-solid: #ffffff;
+  --ds-accent-soft: rgba(37, 88, 217, 0.1);
+  --ds-accent-border: rgba(37, 88, 217, 0.28);
+
+  --ds-info: #0369a1;
+  --ds-info-soft: rgba(3, 105, 161, 0.1);
+  --ds-info-border: rgba(3, 105, 161, 0.28);
+
+  --ds-success: #157a52;
+  --ds-success-soft: rgba(21, 122, 82, 0.11);
+  --ds-success-border: rgba(21, 122, 82, 0.28);
+
+  --ds-warning: #a85d00;
+  --ds-warning-soft: rgba(217, 119, 6, 0.13);
+  --ds-warning-border: rgba(180, 83, 9, 0.36);
+
+  --ds-danger: #c42b37;
+  --ds-danger-soft: rgba(220, 38, 38, 0.11);
+  --ds-danger-border: rgba(185, 28, 28, 0.34);
+
+  /* Elevation */
+  --ds-shadow-xs: 0 1px 2px rgba(17, 21, 31, 0.04);
+  --ds-shadow-card: 0 1px 2px rgba(17, 21, 31, 0.04), 0 4px 14px -6px rgba(17, 21, 31, 0.06);
+  --ds-shadow-popover: 0 14px 34px -8px rgba(17, 21, 31, 0.14), 0 2px 6px rgba(17, 21, 31, 0.06);
+  --ds-shadow-dialog: 0 26px 64px -16px rgba(17, 21, 31, 0.24), 0 0 0 1px rgba(17, 21, 31, 0.08);
+  --ds-elevation-1: var(--ds-shadow-card);
+  --ds-elevation-2: var(--ds-shadow-popover);
+  --ds-elevation-3: var(--ds-shadow-dialog);
+
+  /* Focus ring */
+  --ds-focus-ring: 0 0 0 2px var(--ds-canvas), 0 0 0 4px rgba(37, 88, 217, 0.42);
+  --ds-focus-outline: 2px solid var(--ds-accent);
+
+  /* Motion */
+  --ds-duration-instant: 100ms;
+  --ds-duration-fast: 150ms;
+  --ds-duration-normal: 220ms;
+  --ds-duration-slow: 300ms;
+  --ds-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ds-ease-standard: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ds-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ds-ease-spring: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --ds-backdrop: rgba(16, 19, 27, 0.36);
+
+  /* Z-index layers */
+  --ds-z-sticky: 10;
+  --ds-z-dropdown: 30;
+  --ds-z-titlebar: 40;
+  --ds-z-modal: 60;
+  --ds-z-toast: 80;
+}
+
+html[data-theme='dark'] {
+  /* Dark Palette — Deep Obsidian Frame & Elevated Slate Canvas + Swiss Cobalt / Periwinkle */
+  --ds-bg: #0b0d11;
+  --ds-bg-subtle: #0f1218;
+  --ds-canvas: #12151c;
+  --ds-surface: #171b24;
+  --ds-surface-muted: #1c212c;
+  --ds-surface-hover: #222836;
+  --ds-surface-active: #283041;
+
+  --ds-border: rgba(236, 241, 255, 0.075);
+  --ds-border-strong: rgba(236, 241, 255, 0.145);
+  --ds-border-subtle: rgba(236, 241, 255, 0.048);
+  --ds-rim-top: rgba(255, 255, 255, 0.055);
+
+  --ds-text: #f0f3f9;
+  --ds-text-secondary: #a4aec0;
+  --ds-text-soft: #a4aec0;
+  --ds-text-muted: #939eb3;
+  --ds-text-faint: #8994aa;
+
+  /* Split text accent (#74a4ff) vs AA-compliant solid button fill (#295ce0, 5.4:1 with #fff) */
+  --ds-accent: #74a4ff;
+  --ds-accent-solid: #295ce0;
+  --ds-accent-hover: #3569ec;
+  --ds-accent-strong: #3569ec;
+  --ds-accent-on-solid: #ffffff;
+  --ds-accent-soft: rgba(116, 164, 255, 0.15);
+  --ds-accent-border: rgba(116, 164, 255, 0.34);
+
+  --ds-info: #7dd3fc;
+  --ds-info-soft: rgba(56, 189, 248, 0.15);
+  --ds-info-border: rgba(56, 189, 248, 0.36);
+
+  --ds-success: #4dd49e;
+  --ds-success-soft: rgba(77, 212, 158, 0.15);
+  --ds-success-border: rgba(77, 212, 158, 0.34);
+
+  --ds-warning: #f7c259;
+  --ds-warning-soft: rgba(245, 179, 66, 0.18);
+  --ds-warning-border: rgba(245, 179, 66, 0.44);
+
+  --ds-danger: #ff949b;
+  --ds-danger-soft: rgba(244, 92, 102, 0.17);
+  --ds-danger-border: rgba(255, 148, 155, 0.44);
+
+  --ds-shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.32);
+  --ds-shadow-card: 0 1px 2px rgba(0, 0, 0, 0.36), 0 8px 20px -10px rgba(0, 0, 0, 0.45);
+  --ds-shadow-popover: 0 18px 42px -10px rgba(0, 0, 0, 0.65), 0 0 0 1px rgba(255, 255, 255, 0.08);
+  --ds-shadow-dialog: 0 32px 72px -16px rgba(0, 0, 0, 0.78), 0 0 0 1px rgba(255, 255, 255, 0.09);
+  --ds-elevation-1: var(--ds-shadow-card);
+  --ds-elevation-2: var(--ds-shadow-popover);
+  --ds-elevation-3: var(--ds-shadow-dialog);
+
+  --ds-focus-ring: 0 0 0 2px var(--ds-canvas), 0 0 0 4px rgba(112, 161, 255, 0.5);
+  --ds-backdrop: rgba(4, 6, 10, 0.66);
+}

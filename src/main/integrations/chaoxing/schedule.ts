@@ -93,8 +93,7 @@ export function parseSchedulePayload(raw: unknown): SchedulePayload {
 }
 
 export function parseScheduleWeeksPayload(raw: unknown): ChaoxingSchedule {
-  const parsed =
-    typeof raw === 'string' ? (JSON.parse(raw) as unknown) : raw
+  const parsed = typeof raw === 'string' ? (JSON.parse(raw) as unknown) : raw
   if (!parsed || typeof parsed !== 'object') {
     throw new ChaoxingParseError('UNEXPECTED_PAGE', '课表页返回非 JSON 对象')
   }
@@ -165,7 +164,9 @@ export function parseSectionTimes(value: unknown): SectionTime[] {
 }
 
 export function compressWeeks(weeks: number[]): string {
-  const sorted = [...new Set(weeks)].filter((w) => Number.isFinite(w) && w > 0).sort((a, b) => a - b)
+  const sorted = [...new Set(weeks)]
+    .filter((w) => Number.isFinite(w) && w > 0)
+    .sort((a, b) => a - b)
   if (sorted.length === 0) return ''
   const parts: string[] = []
   let start = sorted[0] as number
@@ -189,7 +190,10 @@ export function lessonToSession(
 ): CourseSession | null {
   if (lesson.dayOfWeek < 1 || lesson.dayOfWeek > 7) return null
   const begin = Math.max(1, Math.min(lesson.beginNumber, sections.length))
-  const endIndex = Math.max(begin, Math.min(begin + Math.max(1, lesson.length) - 1, sections.length))
+  const endIndex = Math.max(
+    begin,
+    Math.min(begin + Math.max(1, lesson.length) - 1, sections.length)
+  )
   const start = sections[begin - 1]
   const end = sections[endIndex - 1]
   if (!start || !end) return null

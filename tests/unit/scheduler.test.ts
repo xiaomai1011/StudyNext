@@ -93,19 +93,37 @@ describe('DDL 提醒调度', () => {
     restarted.stop()
   })
 
-  it('通知失败时释放投递占位，下一次仍可重试', () => {
+  it('通知失败时记录持久化重试，下一次 tick 成功后清除', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-11-11T12:00:00+08:00'))
     createTask(60, 60)
-    const notify = vi.fn(() => {
-      throw new Error('系统通知不可用')
-    })
-    const scheduler = new ReminderScheduler({ store, notify })
+    const notify = vi
+      .fn()
+      .mockImplementationOnce(() => {
+        throw new Error('系统通知不可用')
+      })
+      .mockImplementation(() => undefined)
+    const onSchedulerSettled = vi.fn()
+    const scheduler = new ReminderScheduler({ store, notify, onSchedulerSettled })
     expect(scheduler.start()).toBe(0)
-    scheduler.stop()
+    expect(onSchedulerSettled).toHaveBeenCalledTimes(1)
     const task = store.listTasks().find((item) => item.title === '提醒测试任务')!
     const rule = task.reminders[0]!
+    const key = `${task.id}:${rule.id}:${task.dueAt}`
     expect(store.hasDelivery(task.id, rule.id, task.dueAt)).toBe(false)
+    expect(store.getDeliveryFailure(key)).toMatchObject({
+      attemptCount: 1,
+      lastError: '系统通知不可用',
+      nextRetryAt: '2026-11-11T04:01:00.000Z'
+    })
+    expect(scheduler.getNextReminderAt()).toBe('2026-11-11T04:01:00.000Z')
+
+    vi.advanceTimersByTime(60_000)
+    expect(notify).toHaveBeenCalledTimes(2)
+    expect(store.getDeliveryFailure(key)).toBeNull()
+    expect(store.hasDelivery(task.id, rule.id, task.dueAt)).toBe(true)
+    expect(onSchedulerSettled).toHaveBeenCalledTimes(2)
+    scheduler.stop()
   })
 
   it('提醒文案覆盖预设与自定义时长', () => {

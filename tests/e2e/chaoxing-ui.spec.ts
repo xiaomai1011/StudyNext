@@ -40,39 +40,43 @@ test.afterAll(async () => {
   rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
-async function open(label: string, title: string): Promise<void> {
-  await page.locator('.nav-item', { hasText: label }).click()
-  await expect(page.locator('.page-title')).toHaveText(title)
-  await page.waitForTimeout(300)
-}
+test('课程空间与合并在首页的课表/月视图/时间轴可用', async () => {
+  await page.locator('.studio-pill-item', { hasText: '课程' }).click()
+  await expect(page.locator('.studio-course-shell')).toBeVisible()
+  await expect(page.locator('.course-rail-item')).toHaveCount(5)
+  await page.locator('.course-rail-item').first().click()
+  await expect(page.locator('.course-hero-title')).toBeVisible()
 
-test('课程卡片、详情与课表视图可用', async () => {
-  await open('课程中心', '我的课程')
-  await expect(page.locator('.course-card')).toHaveCount(5)
-  await page.locator('.course-card').first().click()
-  await expect(page.locator('.modal .detail-title')).toBeVisible()
-  await expect(page.locator('.modal .detail-item').filter({ hasText: '学期' })).toBeVisible()
-  await page.locator('.modal-close').click()
-
-  await open('日历', '日历与安排')
+  await page.locator('.studio-pill-item', { hasText: '今天' }).click()
+  await expect(page.locator('.studio-full-week-table')).toBeVisible()
+  await page.getByRole('button', { name: '月视图', exact: true }).click()
   await expect(page.locator('.calendar-month-grid')).toBeVisible()
-  await page.getByRole('button', { name: '周视图', exact: true }).click()
+  await page.getByRole('button', { name: '时间轴', exact: true }).click()
   await expect(page.locator('.week-grid')).toBeVisible()
   await page.screenshot({ path: join(ROOT, 'test-results', 'chaoxing-calendar.png') })
 })
 
-test('任务计数区分同步总数、显示数与逾期数', async () => {
-  await open('任务中心', '任务与 DDL')
-  const subtitle = page.locator('.page-subtitle').filter({ hasText: '其中逾期' })
-  const readCounts = async (): Promise<{ total: number; visible: number; overdue: number }> => {
-    const text = await subtitle.innerText()
-    const match = text.match(/同步 (\d+) 项 · 显示 (\d+) 项 · 其中逾期 (\d+) 项/)
-    if (!match) throw new Error(`无法解析任务计数：${text}`)
-    return { total: Number(match[1]), visible: Number(match[2]), overdue: Number(match[3]) }
+test('任务筛选计数、逾期统计与新建逾期任务保持一致', async () => {
+  await page.locator('.studio-pill-item', { hasText: '作业' }).click()
+  await expect(page.getByRole('heading', { name: '作业', exact: true })).toBeVisible()
+
+  const allTab = page
+    .getByRole('group', { name: '按状态筛选' })
+    .getByRole('button', { name: /^全部/ })
+  const readAllCount = async (): Promise<number> => {
+    const text = await allTab.locator('.b2-tab-count').innerText()
+    return Number(text.trim())
   }
-  const before = await readCounts()
-  expect(before.total).toBe(before.visible)
-  expect(before.visible).toBeGreaterThan(0)
+  const readOverdueCount = async (): Promise<number> => {
+    const badge = page.locator('.studio-overdue-hint')
+    if ((await badge.count()) === 0) return 0
+    const text = await badge.innerText()
+    return Number(text.match(/已逾期\s*(\d+)/)?.[1] ?? '0')
+  }
+
+  const beforeTotal = await readAllCount()
+  const beforeOverdue = await readOverdueCount()
+  expect(beforeTotal).toBeGreaterThan(0)
 
   await page.getByRole('button', { name: '新建任务' }).click()
   await page.getByPlaceholder('例如：完成第 3 章在线作业').fill('E2E 逾期任务')
@@ -80,18 +84,15 @@ test('任务计数区分同步总数、显示数与逾期数', async () => {
   await page.getByRole('button', { name: '创建任务' }).click()
   await expect(page.getByText('任务已创建')).toBeVisible()
 
-  await expect
-    .poll(async () => (await readCounts()).total)
-    .toBe(before.total + 1)
-  const after = await readCounts()
-  expect(after.visible).toBe(before.visible + 1)
-  expect(after.overdue).toBe(before.overdue + 1)
+  await expect.poll(readAllCount).toBe(beforeTotal + 1)
+  await expect.poll(readOverdueCount).toBe(beforeOverdue + 1)
   await expect(page.locator('.task-row').filter({ hasText: 'E2E 逾期任务' })).toHaveCount(1)
 })
 
 test('设置页密码显示切换可用', async () => {
-  await open('设置', '偏好与数据')
-  await page.locator('.settings-nav').getByRole('button', { name: '学习通' }).click()
+  await page.locator('button[aria-label="设置"]').click()
+  await expect(page.locator('.page-title')).toHaveText('偏好与数据')
+  await page.locator('.settings-nav').getByRole('button', { name: '学习通与同步' }).click()
   const panel = page.locator('.chaoxing-credentials')
   await expect(panel).toBeVisible()
   const password = panel.locator('input[placeholder*="密码"]')

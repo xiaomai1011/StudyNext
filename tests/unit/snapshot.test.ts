@@ -118,4 +118,92 @@ describe('学习快照导入', () => {
     expect(() => parseStudySnapshot('{')).toThrow('JSON 格式无效')
     expect(() => parseStudySnapshot('{}')).toThrow('没有找到')
   })
+
+  it('同名平台课程不会被快照导入改写来源或 externalId，且关联数据保持独立', () => {
+    const platform = store.upsertProviderCourse({
+      externalId: '266936191:154266737',
+      name: '计算机导论',
+      teacher: '李老师',
+      sourceUrl: 'https://mooc1.chaoxing.com/course/266936191'
+    })
+    store.upsertImportedTask(
+      {
+        title: '平台作业',
+        description: '平台作业说明',
+        courseId: platform.course.id,
+        priority: 'medium',
+        kind: 'homework',
+        dueAt: '2026-12-01T12:00:00.000Z',
+        reminderOffsets: [60],
+        status: 'todo'
+      },
+      { externalId: '266936191:154266737:work-1', source: 'chaoxing' }
+    )
+    const platformChapter = store.upsertSnapshotChapter({
+      courseId: platform.course.id,
+      externalId: 'platform-chapter',
+      title: '平台章节',
+      sortOrder: 1,
+      progress: 100
+    })
+
+    const importSnapshot = JSON.stringify({
+      courses: [
+        {
+          id: 'import-course-1',
+          name: '计算机导论',
+          code: 'CS-101',
+          chapters: [{ id: 'import-chapter', title: '导入章节', points: [] }],
+          homeworks: [{ id: 'hw-1', title: '导入作业', deadline: '2026-12-20T18:00:00+08:00' }]
+        }
+      ]
+    })
+    const first = importStudySnapshot(store, {
+      fileName: 'same-name.json',
+      content: importSnapshot
+    })
+    expect(first.state).toBe('success')
+    expect(first.importedCourses).toBe(1)
+
+    const platformAfter = store.getCourse(platform.course.id)
+    expect(platformAfter?.source).toBe('chaoxing')
+    expect(platformAfter?.externalId).toBe('266936191:154266737')
+    expect(platformAfter?.name).toBe('计算机导论')
+
+    const sameNameCourses = store.listCourses().filter((course) => course.name === '计算机导论')
+    expect(sameNameCourses).toHaveLength(2)
+    const importedCourse = sameNameCourses.find((course) => course.source === 'import')
+    expect(importedCourse?.externalId).toBe('import-course-1')
+    expect(importedCourse?.id).not.toBe(platform.course.id)
+
+    const platformTasks = store.listTasks().filter((task) => task.courseId === platform.course.id)
+    expect(platformTasks.map((task) => task.title)).toEqual(['平台作业'])
+    const importedTasks = store.listTasks().filter((task) => task.courseId === importedCourse?.id)
+    expect(importedTasks.map((task) => task.title)).toEqual(['导入作业'])
+
+    const platformChapters = store
+      .listChapters()
+      .filter((chapter) => chapter.courseId === platform.course.id)
+    expect(platformChapters.map((chapter) => chapter.title)).toEqual(['平台章节'])
+    expect(platformChapters[0]?.id).toBe(platformChapter.chapter.id)
+
+    const second = importStudySnapshot(store, {
+      fileName: 'same-name.json',
+      content: importSnapshot
+    })
+    expect(second.importedCourses).toBe(0)
+    expect(second.updatedCourses).toBe(1)
+    expect(store.listCourses().filter((course) => course.name === '计算机导论')).toHaveLength(2)
+    expect(store.listTasks().filter((task) => task.title === '导入作业')).toHaveLength(1)
+
+    const resync = store.upsertProviderCourse({
+      externalId: '266936191:154266737',
+      name: '计算机导论',
+      teacher: '李老师',
+      sourceUrl: 'https://mooc1.chaoxing.com/course/266936191'
+    })
+    expect(resync.created).toBe(false)
+    expect(resync.course.id).toBe(platform.course.id)
+    expect(store.listCourses().filter((course) => course.name === '计算机导论')).toHaveLength(2)
+  })
 })

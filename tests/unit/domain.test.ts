@@ -5,6 +5,8 @@ import {
   filterTasks,
   formatRemainingCompact,
   isPlatformTaskDone,
+  isPlatformTaskSubmitted,
+  isSyncStale,
   normalizeReminderOffsets,
   sortTasksByDue
 } from '@shared/domain'
@@ -117,12 +119,38 @@ describe('任务领域逻辑', () => {
 })
 
 describe('平台作业完成状态', () => {
-  it('已提交、待批阅、已批阅和已完成都不算未提交', () => {
+  it('只有已批阅和已完成算本地完成', () => {
     expect(isPlatformTaskDone('not_submitted')).toBe(false)
     expect(isPlatformTaskDone('unknown')).toBe(false)
-    expect(isPlatformTaskDone('submitted')).toBe(true)
-    expect(isPlatformTaskDone('pending_review')).toBe(true)
+    expect(isPlatformTaskDone('submitted')).toBe(false)
+    expect(isPlatformTaskDone('pending_review')).toBe(false)
     expect(isPlatformTaskDone('reviewed')).toBe(true)
     expect(isPlatformTaskDone('done')).toBe(true)
+  })
+
+  it('已提交、待审核、已批阅和已完成都算已提交平台', () => {
+    expect(isPlatformTaskSubmitted('not_submitted')).toBe(false)
+    expect(isPlatformTaskSubmitted('unknown')).toBe(false)
+    expect(isPlatformTaskSubmitted('submitted')).toBe(true)
+    expect(isPlatformTaskSubmitted('pending_review')).toBe(true)
+    expect(isPlatformTaskSubmitted('reviewed')).toBe(true)
+    expect(isPlatformTaskSubmitted('done')).toBe(true)
+  })
+})
+
+describe('同步新鲜度', () => {
+  const now = Date.parse('2026-11-15T00:00:00+08:00')
+
+  it('按分钟间隔判断是否过期', () => {
+    expect(isSyncStale(null, 5, now)).toBe(true)
+    expect(isSyncStale('not-a-date', 5, now)).toBe(true)
+    expect(isSyncStale(new Date(now - 4 * 60_000).toISOString(), 5, now)).toBe(false)
+    expect(isSyncStale(new Date(now - 5 * 60_000).toISOString(), 5, now)).toBe(true)
+    expect(isSyncStale(new Date(now - 60 * 60_000).toISOString(), 5, now)).toBe(true)
+  })
+
+  it('关闭自动刷新时永不过期', () => {
+    expect(isSyncStale(null, 0, now)).toBe(false)
+    expect(isSyncStale(new Date(now - 24 * 60 * 60_000).toISOString(), 0, now)).toBe(false)
   })
 })

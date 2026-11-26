@@ -1,4 +1,7 @@
 import type { PlatformStatusKind, TaskAttachment } from '@shared/types'
+import { resolveNoticeCourseName } from '@shared/notice-course'
+import { normalizeExamScore } from '@shared/today-schedule'
+import type { FieldReadState } from './field-semantics'
 
 /**
  * 学习通页面解析器（纯函数）。
@@ -31,13 +34,7 @@ const LOGIN_URL_MARKERS = [
   'passport2.chaoxing.com/fanyalogin'
 ]
 
-const LOGIN_BODY_MARKERS = [
-  'id="loginBtn"',
-  'id="phone"',
-  'name="pwd"',
-  '用户登录',
-  '新用户注册'
-]
+const LOGIN_BODY_MARKERS = ['id="loginBtn"', 'id="phone"', 'name="pwd"', '用户登录', '新用户注册']
 
 const AUTH_BODY_MARKERS = ['个人空间', 'id="frame_content"', 'aria-label="账号', 'var uid']
 
@@ -80,8 +77,7 @@ export function parseCourseFrameUrl(
     const name = matchFirst(tag, /\bname\s*=\s*["']?([^"'\s>]+)/i)
     if (id !== 'frame_content' && name !== 'frame_content') continue
     const src =
-      matchFirst(tag, /\bsrc\s*=\s*["']([^"']+)["']/i) ??
-      matchFirst(tag, /\bsrc\s*=\s*([^\s>]+)/i)
+      matchFirst(tag, /\bsrc\s*=\s*["']([^"']+)["']/i) ?? matchFirst(tag, /\bsrc\s*=\s*([^\s>]+)/i)
     if (!src) continue
     const raw = decodeEntities(src)
       .trim()
@@ -117,9 +113,10 @@ export function parseProfile(html: string): ChaoxingProfile {
     matchFirst(html, /aria-label="账号[:：]\s*([^"<]{1,40})"/) ??
     matchFirst(html, /账号[:：]\s*([^<\s"']{1,40})/)
   const school = matchFirst(html, /id="siteName"[^>]*title="([^"]+)"/)
-  const uid = matchFirst(html, /var uid\s*=\s*'?(\d+)'?/)
-  const fid =
-    matchFirst(html, /"fid"\s*:\s*"?(\d+)"?/) ?? matchFirst(html, /var fid\s*=\s*'(\d+)'/)
+  const rawUid = matchFirst(html, /var uid\s*=\s*'?(\d+)'?/)
+  // Only a numeric platform UID is stable identity; never derive it from a display name.
+  const uid = rawUid && /^\d{1,20}$/.test(rawUid) ? rawUid : null
+  const fid = matchFirst(html, /"fid"\s*:\s*"?(\d+)"?/) ?? matchFirst(html, /var fid\s*=\s*'(\d+)'/)
   return {
     name: normalizeText(name),
     school: normalizeText(school),
@@ -244,10 +241,320 @@ export interface ChaoxingHomeworkDetail {
   submittedAtText: string | null
   teacherFeedback: string | null
   attachments: TaskAttachment[]
+  /** 页面是否具备完整作业详情结构；不完整时所有字段按 unread 处理。 */
+  complete: boolean
+  /**
+   * 每个字段的读取状态。同步层据此区分“没读到”“读到有效值”“平台明确为空”，
+   * 避免把一次不完整响应当成平台清空，也避免平台真的清空后本地永远保留旧值。
+   */
+  fields: {
+    score: FieldReadState
+    fullScore: FieldReadState
+    teacherFeedback: FieldReadState
+    submittedAt: FieldReadState
+    deadline: FieldReadState
+    attachments: FieldReadState
+  }
+}
+
+const DETAIL_FIELD_LABELS = [
+  '教师批语',
+  '教师评语',
+  '批语',
+  '评语',
+  '得分',
+  '总分',
+  '成绩',
+  '批阅',
+  '智能分析',
+  '满分',
+  '提交时间',
+  '提交日期',
+  '提交于',
+  '首次提交',
+  '截止时间',
+  '截止日期',
+  '结束时间',
+  '附件列表',
+  '提交附件',
+  '作业附件',
+  '附件',
+  '题量',
+  '我的答案',
+  '正确答案',
+  '作答记录'
+]
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** 取出标签后的字段片段，截断到下一个已知详情标签之前。 */
+function readFieldSegment(text: string, labels: string[]): string | null {
+  const labelPattern = labels.map(escapeRegExp).join('|')
+  const label = new RegExp(`(?:${labelPattern})\\s*[:：]?`, 'i').exec(text)
+  if (!label) return null
+  const start = label.index + label[0].length
+  const after = text.slice(start)
+  const nextPattern = new RegExp(
+    `\\s*(?:${DETAIL_FIELD_LABELS.map(escapeRegExp).join('|')})\\s*[:：]?`,
+    'i'
+  )
+  const next = nextPattern.exec(after)
+  return (next ? after.slice(0, next.index) : after).trim()
+}
+
+function isLoadingFieldValue(value: string): boolean {
+  return /(?:加载中|读取中|正在加载|暂无加载结果|loading)/i.test(value)
+}
+
+function isExplicitEmptyFieldValue(value: string): boolean {
+  const normalized = value
+    .replace(/^[\s:：]+/, '')
+    .replace(/[\s。；;]+$/g, '')
+    .trim()
+  return /^(?:—|--|-|无|暂无|未批阅|未评分|未提交|暂无批语|无批语)$/.test(normalized)
+}
+
+function isExplicitEmptyAttachmentValue(value: string): boolean {
+  const normalized = value
+    .replace(/^[\s:：]+/, '')
+    .replace(/[\s。；;]+$/g, '')
+    .trim()
+  return /^(?:—|--|-|无|暂无|无附件|暂无附件)$/.test(normalized)
+}
+
+/**
+ * 附件区的“加载中”标记。附件是异步渲染的，页面整体完整不代表附件已经扫描完成。
+ * 出现这些标记时一律视为 unread，不能把空结果当成平台明确删除附件。
+ */
+const ATTACHMENT_BUSY_PATTERN =
+  /(?:aria-busy\s*=\s*["']?true["']?|data-loading\s*=\s*["']?true["']?|class\s*=\s*["'][^"']*\b(?:loading|is-loading|attach-loading)\b)/i
+
+/**
+ * 附件区的“扫描完成”标记。只有平台自己给出完成证据时才允许把空列表当成
+ * 明确清空；没有证据时保留历史附件，宁可暂时显示旧数据也不误删。
+ */
+const ATTACHMENT_COMPLETE_PATTERN =
+  /(?:aria-busy\s*=\s*["']?false["']?|data-loaded\s*=\s*["']?true["']?|data-complete\s*=\s*["']?true["']?|data-scan(?:ned)?\s*=\s*["']?true["']?|附件(?:列表)?\s*(?:已)?加载完成|附件扫描完成)/i
+
+const ATTACHMENT_CONTAINER_PATTERN =
+  /<(?:div|section|ul|ol|dl|table|tbody)\b[^>]*(?:class|id)\s*=\s*["'][^"']*\battach[a-z-]*\b[^"']*["'][^>]*>/gi
+
+const ATTACHMENT_LABEL_PATTERN = /附件(?:列表)?\s*[:：]/g
+
+/**
+ * “附件：”标签可能落在行内元素（span/em）里，真正承载附件状态的通常是最近的
+ * 块级容器。只向上找块级元素，避免把 `<span>附件：</span><span>暂无附件</span>`
+ * 切成半个区域。
+ */
+const ATTACHMENT_REGION_TAGS = new Set([
+  'div',
+  'section',
+  'article',
+  'aside',
+  'li',
+  'ul',
+  'ol',
+  'dl',
+  'dd',
+  'dt',
+  'td',
+  'th',
+  'tr',
+  'table',
+  'tbody',
+  'p',
+  'form',
+  'fieldset'
+])
+
+/** HTML 中不参与嵌套计数的空元素。 */
+const VOID_TAGS = new Set([
+  'area',
+  'base',
+  'br',
+  'col',
+  'embed',
+  'hr',
+  'img',
+  'input',
+  'link',
+  'meta',
+  'param',
+  'source',
+  'track',
+  'wbr'
+])
+
+interface OpenTagFrame {
+  tag: string
+  start: number
+  end: number
+}
+
+interface AttachmentRegion {
+  start: number
+  end: number
+  html: string
+}
+
+/**
+ * 扫描 `until` 之前的开始/结束标签，返回仍未闭合的元素栈。
+ * 用于定位某个文本（例如“附件：”）真正所在的元素边界，而不是按固定长度切片。
+ */
+function scanOpenTags(html: string, until: number): OpenTagFrame[] {
+  const stack: OpenTagFrame[] = []
+  const pattern = /<(\/?)([a-zA-Z][a-zA-Z0-9:-]*)([^>]*?)(\/?)>/g
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(html)) !== null) {
+    if (match.index >= until) break
+    const closing = match[1] === '/'
+    const tag = (match[2] ?? '').toLowerCase()
+    const selfClosing = match[4] === '/'
+    if (closing) {
+      for (let index = stack.length - 1; index >= 0; index -= 1) {
+        if (stack[index]?.tag === tag) {
+          stack.length = index
+          break
+        }
+      }
+      continue
+    }
+    if (selfClosing || VOID_TAGS.has(tag)) continue
+    if (tag === 'script' || tag === 'style') {
+      const closeIndex = html.toLowerCase().indexOf(`</${tag}`, match.index)
+      if (closeIndex !== -1) pattern.lastIndex = closeIndex
+      continue
+    }
+    stack.push({ tag, start: match.index, end: match.index + match[0].length })
+  }
+  return stack
+}
+
+/** 从开始标签处向后匹配同名结束标签，返回区域结束下标；无法平衡时返回 null。 */
+function findElementEnd(html: string, startIndex: number, tag: string): number | null {
+  if (VOID_TAGS.has(tag)) return startIndex
+  const pattern = new RegExp(`<(/?)${tag}\\b[^>]*?(/?)>`, 'gi')
+  pattern.lastIndex = startIndex
+  let depth = 0
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(html)) !== null) {
+    const closing = match[1] === '/'
+    const selfClosing = match[2] === '/'
+    if (closing) {
+      depth -= 1
+      if (depth === 0) return match.index + match[0].length
+      if (depth < 0) return null
+      continue
+    }
+    if (selfClosing) continue
+    depth += 1
+  }
+  return null
+}
+
+/**
+ * 找出所有可信的附件区域（真实元素边界）：
+ * - class/id 含 `attach` 的容器元素；
+ * - “附件：”标签所在的最小元素。
+ * 无法确定边界时标记 unreliable，调用方按 unread 处理。
+ */
+function readAttachmentRegions(html: string): {
+  regions: AttachmentRegion[]
+  unreliable: boolean
+} {
+  const regions: AttachmentRegion[] = []
+  let unreliable = false
+  const push = (start: number, end: number | null): void => {
+    if (end === null || end <= start) {
+      unreliable = true
+      return
+    }
+    if (regions.some((region) => start >= region.start && end <= region.end)) return
+    regions.push({ start, end, html: html.slice(start, end) })
+  }
+
+  ATTACHMENT_CONTAINER_PATTERN.lastIndex = 0
+  let match: RegExpExecArray | null
+  while ((match = ATTACHMENT_CONTAINER_PATTERN.exec(html)) !== null) {
+    const tagMatch = /^<([a-zA-Z][a-zA-Z0-9:-]*)/.exec(match[0])
+    const tagName = tagMatch?.[1]
+    if (!tagName) continue
+    push(match.index, findElementEnd(html, match.index, tagName.toLowerCase()))
+  }
+
+  ATTACHMENT_LABEL_PATTERN.lastIndex = 0
+  while ((match = ATTACHMENT_LABEL_PATTERN.exec(html)) !== null) {
+    const labelIndex = match.index
+    const stack = scanOpenTags(html, labelIndex)
+    if (stack.length === 0) {
+      unreliable = true
+      continue
+    }
+    let enclosing = stack[stack.length - 1]
+    for (let index = stack.length - 1; index >= 0; index -= 1) {
+      const frame = stack[index]
+      if (frame && ATTACHMENT_REGION_TAGS.has(frame.tag)) {
+        enclosing = frame
+        break
+      }
+    }
+    if (!enclosing || enclosing.tag === 'body' || enclosing.tag === 'html') {
+      unreliable = true
+      continue
+    }
+    if (regions.some((region) => labelIndex >= region.start && labelIndex < region.end)) continue
+    push(enclosing.start, findElementEnd(html, enclosing.start, enclosing.tag))
+  }
+
+  return { regions, unreliable }
+}
+
+/** 去掉“附件：”标签前缀，只留字段值文本。 */
+function readAttachmentValueText(text: string): string {
+  const label = /附件(?:列表)?\s*[:：]/.exec(text)
+  if (!label) return text.trim()
+  return text.slice(label.index + label[0].length).trim()
+}
+
+/**
+ * 计算附件字段的读取状态（CP3-F2-03-R 第二轮）。
+ *
+ * 关键约束：完成证据、忙碌状态和“明确为空”的文本必须来自同一个附件区域。
+ * 不允许用整页 `data-loaded="true"`（例如成绩区域）当作附件扫描完成，也不允许
+ * 按固定长度截取片段把容器外的兄弟节点算进来。
+ *
+ * 规则：
+ * - 解析到附件 → present。
+ * - 无附件区域、区域边界不可靠、区域为空且无完成证据、区域忙碌、区域仍在加载 → unread。
+ * - 只有区域自身带完成证据且区域内明确显示无附件 → confirmed_absent。
+ */
+function readAttachmentFieldState(html: string, attachments: TaskAttachment[]): FieldReadState {
+  if (attachments.length > 0) return 'present'
+  const { regions, unreliable } = readAttachmentRegions(html)
+  if (unreliable) return 'unread'
+  if (regions.length === 0) return 'unread'
+  for (const region of regions) {
+    if (ATTACHMENT_BUSY_PATTERN.test(region.html)) return 'unread'
+  }
+  for (const region of regions) {
+    if (isLoadingFieldValue(stripTags(region.html))) return 'unread'
+  }
+  const completed = regions.filter((region) => ATTACHMENT_COMPLETE_PATTERN.test(region.html))
+  if (completed.length === 0) return 'unread'
+  for (const region of completed) {
+    const value = readAttachmentValueText(stripTags(region.html))
+    if (isExplicitEmptyAttachmentValue(value)) return 'confirmed_absent'
+  }
+  return 'unread'
 }
 
 export function parseHomeworkDetail(html: string): ChaoxingHomeworkDetail {
   const text = stripTags(html)
+  const complete =
+    /作业详情/.test(text) &&
+    /(?:题量[:：]|满分[:：]|提交时间[:：]|得分[:：]|教师批语[:：]|截止时间[:：])/.test(text)
   const result: ChaoxingHomeworkDetail = {
     title: null,
     questionCount: null,
@@ -257,7 +564,16 @@ export function parseHomeworkDetail(html: string): ChaoxingHomeworkDetail {
     score: null,
     submittedAtText: null,
     teacherFeedback: null,
-    attachments: []
+    attachments: [],
+    complete,
+    fields: {
+      score: 'unread',
+      fullScore: 'unread',
+      teacherFeedback: 'unread',
+      submittedAt: 'unread',
+      deadline: 'unread',
+      attachments: 'unread'
+    }
   }
   const countIndex = text.search(/题量[:：]/)
   if (countIndex > 0) {
@@ -270,38 +586,109 @@ export function parseHomeworkDetail(html: string): ChaoxingHomeworkDetail {
   }
   const count = matchFirst(text, /题量[:：]\s*(\d+)/)
   if (count) result.questionCount = Number(count)
-  const fullScore = matchFirst(text, /满分[:：]\s*(\d+(?:\.\d+)?)/)
-  if (fullScore) result.fullScore = Number(fullScore)
-  const range = /(?:作答时间|考试时间|答题时间)[:：]\s*(\d{1,4}-?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})\s*(?:至|到|-|—)\s*(\d{1,4}-?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})/.exec(
-    text
-  )
+  const fullScoreSegment = readFieldSegment(text, ['满分'])
+  if (fullScoreSegment !== null) {
+    if (isLoadingFieldValue(fullScoreSegment)) {
+      result.fields.fullScore = 'unread'
+    } else {
+      const fullScore = matchFirst(fullScoreSegment, /(\d+(?:\.\d+)?)/)
+      if (fullScore) {
+        result.fullScore = Number(fullScore)
+        result.fields.fullScore = 'present'
+      } else if (isExplicitEmptyFieldValue(fullScoreSegment)) {
+        result.fields.fullScore = 'confirmed_absent'
+      } else {
+        // 标签存在但没有可靠数字：加载中/空占位/解析失败均视为未读取。
+        result.fields.fullScore = 'unread'
+      }
+    }
+  }
+  const range =
+    /(?:作答时间|考试时间|答题时间)[:：]\s*(\d{1,4}-?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})\s*(?:至|到|-|—)\s*(\d{1,4}-?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})/.exec(
+      text
+    )
   if (range) {
     result.startText = range[1] ?? null
     result.deadlineText = range[2] ?? null
+    result.fields.deadline = result.deadlineText ? 'present' : 'unread'
   } else {
-    const single = /(?:截止时间|截止日期|结束时间)[:：]\s*(\d{1,4}-?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})/.exec(
-      text
-    )
-    if (single) result.deadlineText = single[1] ?? null
+    const single =
+      /(?:截止时间|截止日期|结束时间)[:：]\s*(\d{1,4}-?\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2})/.exec(text)
+    if (single) {
+      result.deadlineText = single[1] ?? null
+      result.fields.deadline = result.deadlineText ? 'present' : 'unread'
+    }
   }
-  const score =
-    matchFirst(text, /智能分析\s*(\d+(?:\.\d+)?)\s*分/) ??
-    matchFirst(text, /(?:得分|总分|成绩|批阅)[:：]?\s*(\d+(?:\.\d+)?)\s*分?/)
-  if (score) result.score = score
-  const submitted =
-    /(?:提交时间|提交日期|提交于|首次提交)[:：]?\s*(\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?)/.exec(
-      text
-    )
-  if (submitted) result.submittedAtText = submitted[1] ?? null
-  const feedback =
-    /(?:教师批语|教师评语|批语|评语)[:：]?\s*([\s\S]{1,800}?)(?=\s*(?:教师批语|教师评语|批语|评语|得分|成绩|满分|提交时间|我的答案|正确答案|作答记录)[:：]?|$)/.exec(
-      text
-    )
-  if (feedback) {
-    const value = normalizeText(feedback[1])?.split(/\s(?:一|二|三|四|五)[.、]/)[0]
-    if (value) result.teacherFeedback = value.slice(0, 300)
+  const scoreSegment = readFieldSegment(text, ['得分', '总分', '成绩', '批阅', '智能分析'])
+  if (scoreSegment !== null) {
+    if (isLoadingFieldValue(scoreSegment)) {
+      result.fields.score = 'unread'
+    } else {
+      const score =
+        matchFirst(scoreSegment, /(\d+(?:\.\d+)?)\s*分?/) ??
+        matchFirst(scoreSegment, /(\d+(?:\.\d+)?)/)
+      if (score) {
+        // “0 分”是有效成绩，不能被当成缺失。
+        result.score = score
+        result.fields.score = 'present'
+      } else if (isExplicitEmptyFieldValue(scoreSegment)) {
+        result.fields.score = 'confirmed_absent'
+      } else {
+        result.fields.score = 'unread'
+      }
+    }
+  }
+  const submittedSegment = readFieldSegment(text, ['提交时间', '提交日期', '提交于', '首次提交'])
+  if (submittedSegment !== null) {
+    if (isLoadingFieldValue(submittedSegment)) {
+      result.fields.submittedAt = 'unread'
+    } else {
+      const submitted = /(\d{4}-\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}(?::\d{2})?)/.exec(submittedSegment)
+      if (submitted) {
+        result.submittedAtText = submitted[1] ?? null
+        result.fields.submittedAt = 'present'
+      } else if (isExplicitEmptyFieldValue(submittedSegment)) {
+        result.fields.submittedAt = 'confirmed_absent'
+      } else {
+        result.fields.submittedAt = 'unread'
+      }
+    }
+  }
+  const feedbackSegment = readFieldSegment(text, ['教师批语', '教师评语', '批语', '评语'])
+  if (feedbackSegment !== null) {
+    if (isLoadingFieldValue(feedbackSegment)) {
+      result.fields.teacherFeedback = 'unread'
+    } else {
+      const value = normalizeText(feedbackSegment.replace(/^[\s:：]+/, ''))?.split(
+        /\s(?:一|二|三|四|五)[.、]/
+      )[0]
+      if (value && !isExplicitEmptyFieldValue(value)) {
+        result.teacherFeedback = value.slice(0, 300)
+        result.fields.teacherFeedback = 'present'
+      } else if (value && isExplicitEmptyFieldValue(value)) {
+        result.fields.teacherFeedback = 'confirmed_absent'
+      } else {
+        // 空 DOM 节点、空字符串、加载中都不是平台明确清空。
+        result.fields.teacherFeedback = 'unread'
+      }
+    }
   }
   result.attachments = parseTaskAttachments(html)
+  if (!complete) {
+    result.fields = {
+      score: 'unread',
+      fullScore: 'unread',
+      teacherFeedback: 'unread',
+      submittedAt: 'unread',
+      deadline: 'unread',
+      attachments: 'unread'
+    }
+    return result
+  }
+  // 附件必须有独立扫描完成证据：解析到附件即 present；附件区缺失、带 loading
+  // 标记、空容器、无完成证据一律 unread；只有附件区明确完成且明确为空才
+  // confirmed_absent。不能把整个详情页的 complete 当成附件扫描完成。
+  result.fields.attachments = readAttachmentFieldState(html, result.attachments)
   return result
 }
 
@@ -319,17 +706,13 @@ export function parseTaskAttachments(html: string): TaskAttachment[] {
   while ((match = tagPattern.exec(html)) !== null) {
     const tag = match[0]
     const tagName = (match[1] ?? '').toLowerCase()
-    const objectId =
-      readTagAttribute(tag, 'objectid') ?? readTagAttribute(tag, 'data') ?? null
+    const objectId = readTagAttribute(tag, 'objectid') ?? readTagAttribute(tag, 'data') ?? null
     let name = readTagAttribute(tag, 'filename') ?? ''
     let size = readTagAttribute(tag, 'filesize') ?? null
     if (tagName === 'div') {
       const end = html.indexOf('</div>', match.index)
       const block = html.slice(match.index, end === -1 ? match.index + 800 : end)
-      name =
-        name ||
-        matchFirst(block, /class="dataName"[^>]*>([^<]{1,200})<\/span>/) ||
-        ''
+      name = name || matchFirst(block, /class="dataName"[^>]*>([^<]{1,200})<\/span>/) || ''
       size = size ?? matchFirst(block, /class="dataSize"[^>]*>([^<]{1,40})<\/span>/)
     }
     const normalizedName = normalizeText(decodeEntities(name))
@@ -393,7 +776,7 @@ export function classifyHomeworkStatus(raw: string): PlatformStatusKind {
   const text = raw.replace(/\s+/g, '')
   if (!text) return 'unknown'
   // 批阅状态优先于“已提交/已完成”：待批阅说明平台已收到提交但教师未批阅。
-  if (/(待批阅|待评阅|待评分)/.test(text)) return 'pending_review'
+  if (/(待批阅|待评阅|待评分|待审核|审核中|待复核|复核中)/.test(text)) return 'pending_review'
   if (/(已批阅|已评阅|已评分)/.test(text)) return 'reviewed'
   if (/(已完成|已通过)/.test(text)) return 'done'
   if (/(已提交|已交|已上交)/.test(text)) return 'submitted'
@@ -432,17 +815,14 @@ export function parseNoticeList(raw: string): ChaoxingNoticeRecord[] {
     const title = typeof record.title === 'string' ? record.title.trim() : ''
     if (!title) continue
     const rawUuid = typeof record.uuid === 'string' ? record.uuid : ''
-    const externalId = rawUuid || `notice:${hashString(`${title}|${String(record.sendTime ?? '')}`)}`
+    const externalId =
+      rawUuid || `notice:${hashString(`${title}|${String(record.sendTime ?? '')}`)}`
     const receivers = Array.isArray(record.receiverArray)
       ? (record.receiverArray as Array<Record<string, unknown>>)
       : []
-    const courseName =
-      receivers.length > 0 && typeof receivers[0]?.name === 'string'
-        ? receivers[0].name
-        : null
     const publishedAt =
       typeof record.sendTime === 'string'
-        ? toIsoDateTime(record.sendTime) ?? new Date().toISOString()
+        ? (toIsoDateTime(record.sendTime) ?? new Date().toISOString())
         : typeof record.insertTime === 'number'
           ? new Date(record.insertTime).toISOString()
           : new Date().toISOString()
@@ -464,12 +844,29 @@ export function parseNoticeList(raw: string): ChaoxingNoticeRecord[] {
         : typeof record.rtf_content === 'string'
           ? stripTags(record.rtf_content)
           : ''
+    const decodedRawBody = decodeEntities(bodySource)
+    const body = decodedRawBody.replace(/\s+/g, ' ').trim().slice(0, 500)
+    const sender = typeof record.createrName === 'string' ? record.createrName.trim() || null : null
+    const explicitCourseName =
+      typeof record.courseName === 'string'
+        ? record.courseName
+        : typeof record.coursename === 'string'
+          ? record.coursename
+          : null
+    const courseName = resolveNoticeCourseName({
+      title,
+      body,
+      rawBody: decodedRawBody,
+      sender,
+      explicitCourseName,
+      receivers
+    })
     result.push({
       externalId,
       title,
-      body: decodeEntities(bodySource).replace(/\s+/g, ' ').trim().slice(0, 500),
+      body,
       category: courseName ? 'course' : 'notice',
-      sender: typeof record.createrName === 'string' ? record.createrName : null,
+      sender,
       courseName,
       publishedAt,
       read:
@@ -537,16 +934,20 @@ export function parseMaterialList(html: string): ChaoxingMaterialRecord[] {
       decodeEntities(readAttribute(body, 'title') ?? '') ||
       decodeEntities(stripTags(body)).trim()
     if (!name) continue
+    const onclickMatch = body.match(/toOpen\(([\s\S]*?)\)/i)
+    const args = onclickMatch ? splitQuotedArgs(onclickMatch[1] ?? '') : []
+    const remoteUrl = args.find((arg) => /^https?:\/\//i.test(arg)) ?? null
+    // 同名文件很常见。缺少 dataId/id 时优先用稳定链接区分，避免把
+    // 两个不同资料折叠成同一个 externalId 后静默覆盖。
     const externalId = dataId
       ? `material:${dataId}`
       : id
         ? `material:${id}`
-        : `material:name:${hashString(name)}`
+        : remoteUrl
+          ? `material:url:${hashString(remoteUrl)}`
+          : `material:name:${hashString(name)}`
     if (seen.has(externalId)) continue
     seen.add(externalId)
-    const onclickMatch = body.match(/toOpen\(([\s\S]*?)\)/i)
-    const args = onclickMatch ? splitQuotedArgs(onclickMatch[1] ?? '') : []
-    const remoteUrl = args.find((arg) => /^https?:\/\//i.test(arg)) ?? null
     const kind: ChaoxingMaterialRecord['kind'] =
       type === 'afolder' ? 'folder' : type === 'url' ? 'link' : 'file'
     const fileType =
@@ -581,12 +982,22 @@ function splitQuotedArgs(value: string): string[] {
   return args
 }
 
+export interface ChaoxingChapterResource {
+  name: string
+  size: string | null
+  type: string | null
+  url: string | null
+  objectId: string | null
+}
+
 export interface ChaoxingChapterSection {
   number: string
   title: string
   completed: boolean
   pendingCount: number
   locked: boolean
+  chapterId: string | null
+  resources: ChaoxingChapterResource[]
 }
 
 export interface ChaoxingChapter {
@@ -598,7 +1009,13 @@ export interface ChaoxingChapter {
 export interface ChaoxingChapterList {
   chapters: ChaoxingChapter[]
   done: number
-  total: number
+  /**
+   * 平台明确显示的任务点总数。
+   * null 表示页面没有返回“已完成任务点”标记，不能解释为真实 0。
+   */
+  total: number | null
+  sourceUrl: string | null
+  enc: string | null
 }
 
 /**
@@ -635,18 +1052,92 @@ export function parseChapterList(html: string): ChaoxingChapterList {
     if (chapterIndex < 0) continue
     const chapter = chapters[chapterIndex]
     if (!chapter) continue
+    const chapterId = /toOld\('(\d+)',\s*'(\d+)',\s*'(\d+)',\s*0\)/.exec(block)?.[2] ?? null
     chapter.sections.push({
       number,
       title: decodeEntities(match[1] ?? '').trim(),
       completed: block.includes('icon_yiwanc'),
       pendingCount: pending ? Number.parseInt(pending, 10) : 0,
-      locked: block.includes('暂未开放')
+      locked: block.includes('暂未开放'),
+      chapterId,
+      resources: []
     })
   }
   const progressMatch = /已完成任务点:\s*<span[^>]*>(\d+)<\/span>\s*\/\s*(\d+)/.exec(html)
+  // 缺少“已完成任务点”标记时是“未知”，不是平台明确返回的 0。
   const done = progressMatch ? Number.parseInt(progressMatch[1] ?? '0', 10) : 0
-  const total = progressMatch ? Number.parseInt(progressMatch[2] ?? '0', 10) : 0
-  return { chapters, done, total }
+  const total = progressMatch ? Number.parseInt(progressMatch[2] ?? '0', 10) : null
+  const sourceUrlMatch = /data-studynext-chapter-url="([^"]*)"/.exec(html)
+  const sourceUrl = sourceUrlMatch
+    ? safeDecode(decodeEntities(sourceUrlMatch[1] ?? '')) || null
+    : null
+  const encMatch = /var\s+enc\s*=\s*["']([^"']+)["']/.exec(html)
+  const enc = encMatch?.[1] ?? null
+  return { chapters, done, total, sourceUrl, enc }
+}
+
+/**
+ * 从 knowledge/cards 页面脚本中的 mArg.attachments 提取附件元数据。
+ * 这些附件位于章节点内容里，不在课程“资料”标签页的列表中。
+ */
+export function parseKnowledgeCardResources(html: string): ChaoxingChapterResource[] {
+  const decoded = decodeEntities(html)
+  const marker = 'attachments":'
+  const markerIndex = decoded.indexOf(marker)
+  if (markerIndex < 0) return []
+  const start = decoded.indexOf('[', markerIndex + marker.length)
+  if (start < 0) return []
+  let depth = 0
+  let end = -1
+  for (let index = start; index < decoded.length; index += 1) {
+    const char = decoded[index]
+    if (char === '[') depth += 1
+    else if (char === ']') {
+      depth -= 1
+      if (depth === 0) {
+        end = index + 1
+        break
+      }
+    }
+  }
+  if (end < 0) return []
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(decoded.slice(start, end))
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+  const resources: ChaoxingChapterResource[] = []
+  const seen = new Set<string>()
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue
+    const record = item as Record<string, unknown>
+    const property = record.property
+    if (!property || typeof property !== 'object') continue
+    const detail = property as Record<string, unknown>
+    const name =
+      typeof detail.name === 'string'
+        ? detail.name
+        : typeof detail.title === 'string'
+          ? detail.title
+          : ''
+    if (!name.trim()) continue
+    const url =
+      typeof detail.src === 'string' && /^https?:\/\//i.test(detail.src) ? detail.src : null
+    const objectId = typeof detail.objectid === 'string' ? detail.objectid : null
+    const key = `${objectId ?? ''}|${name}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    resources.push({
+      name: name.trim(),
+      size: typeof detail.hsize === 'string' ? detail.hsize : null,
+      type: typeof detail.type === 'string' ? detail.type : null,
+      url,
+      objectId
+    })
+  }
+  return resources
 }
 
 export function parseExamList(html: string): ChaoxingExamRecord[] {
@@ -666,14 +1157,11 @@ export function parseExamList(html: string): ChaoxingExamRecord[] {
     const start = parseExamDate(timeText)
     if (!start) continue
     const endMatch = /至\s*(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2})/.exec(timeText)
-    const end = endMatch
-      ? toIsoDateTime(`${endMatch[1] ?? ''} ${endMatch[2] ?? ''}`)
-      : null
+    const end = endMatch ? toIsoDateTime(`${endMatch[1] ?? ''} ${endMatch[2] ?? ''}`) : null
     const href = matchFirst(row, /href="([^"]+)"/i)
     const sourceUrl = href ? absoluteExamUrl(decodeEntities(href)) : null
     const externalId =
-      (sourceUrl ? readExamId(sourceUrl) : null) ??
-      `exam:${hashString(`${title}|${start}`)}`
+      (sourceUrl ? readExamId(sourceUrl) : null) ?? `exam:${hashString(`${title}|${start}`)}`
     if (seen.has(externalId)) continue
     seen.add(externalId)
     const duration = Number.parseInt(cells[3] ?? '', 10)
@@ -686,7 +1174,7 @@ export function parseExamList(html: string): ChaoxingExamRecord[] {
       durationMinutes: Number.isFinite(duration) ? duration : null,
       examStatus: cells[4] ?? '',
       answerStatus: cells[5] ?? '',
-      score: cells[6] || null,
+      score: normalizeExamScore(cells[6]),
       mode: cells[7] || null,
       sourceUrl
     })
@@ -742,7 +1230,13 @@ export function stripTags(html: string): string {
     .trim()
 }
 
-function buildCstIso(year: number, month: number, day: number, hour: number, minute: number): string {
+function buildCstIso(
+  year: number,
+  month: number,
+  day: number,
+  hour: number,
+  minute: number
+): string {
   const pad = (value: number): string => String(value).padStart(2, '0')
   return new Date(
     `${year}-${pad(month)}-${pad(day)}T${pad(hour)}:${pad(minute)}:00+08:00`

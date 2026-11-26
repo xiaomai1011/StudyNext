@@ -1,293 +1,173 @@
 # StudyNext
 
-StudyNext 是一个面向 Windows 10/11 的学习通第三方桌面客户端。它把课程、任务、DDL、日历和官方网页入口放进一个本地优先的桌面应用，重点解决网页版信息分散、截止时间不集中、提醒不可控的问题。
+> 现代化学习通桌面客户端：把课程、作业、资料与 DDL 收进一个本地优先的 Windows 桌面应用。
 
-> 当前应用版本是 **0.3.0（桌面客户端 + 学习中心 + 真实接入边界）**。v0.4.0 第一轮只做学习通接入研究、Provider/同步中心设计、Windows 通知 PoC，不包含未经授权的实时适配器。课程、任务、章节进度、题库、通知与演示数据都保存在本机；没有配置学习通授权数据源时，应用会明确显示“未配置”，不会伪造同步结果。
+StudyNext 不是学习通官方客户端。课程与作业数据通过**用户本人已登录的学习通 Web Session**只读同步，作业编辑、附件上传、草稿保存与提交均在隔离的官方页面内由用户本人完成；应用不绕过验证码、MFA、监考或教师权限，也不伪造学习记录、签到或提交。
 
-![StudyNext 仪表盘](docs/screenshots/dashboard-light.png)
+当前开发基线为 **v0.5.0**，产品方向与实现边界以 [AGENTS.md](AGENTS.md)、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/STATUS.md](docs/STATUS.md) 为准。
 
-| 学习中心                                      | 题目助手                                          |
-| --------------------------------------------- | ------------------------------------------------- |
-| ![学习中心](docs/screenshots/study-light.png) | ![题目助手](docs/screenshots/questions-light.png) |
+## 功能
 
-## 已实现功能
+### 今天
 
-### 桌面体验
+- 今日课程、待办、待审核/已提交、近期截止与通知聚合在一页。
+- 周课表固定五时段展示，支持周/日/月/时间轴视图。
+- 顶部状态带显示学习通连接状态、最近同步时间与自动刷新状态。
 
-- Electron 无边框窗口、窗口状态记忆、最小尺寸、深浅色/跟随系统主题
-- 自定义标题栏、最小化/最大化/关闭、关闭到系统托盘
-- 托盘菜单：打开应用、今日待办、任务中心、课程中心、提醒开关、数据目录、退出
-- 全局 Toast 反馈、空状态、加载与错误页
-- 所有数据本地持久化，默认不上传
+### 课程
 
-### 首页仪表盘
+- 课程工作台按“课程 → 章节 → 小节 → 学习点”浏览学习进度。
+- 章节筛选、课程内搜索、未完成任务优先排序。
+- 课程资料按教学班合并去重，支持文件夹、链接与文件条目。
+- 任务点进度来自平台真实任务点；无任务点课程保留章节与资料，不伪造 100%。
 
-- 今日待办、未来 7 天截止、任务完成率、本学期课程统计
-- 今日课程（按开始时间排序）
-- 最近通知（明确标注为演示数据，不代表学习通消息）
-- 最近同步时间与数据来源、近期待办快捷入口
+### 作业
 
-### 课程中心
+- 平台六态：`not_submitted`、`submitted`、`pending_review`、`reviewed`、`done`、`unknown`。
+- 平台状态与本地完成状态分离；逾期、待审核、已批阅、已完成分组展示。
+- 截止规划条、提醒规则、成绩与教师批语、作业附件下载。
+- 作业正文、附件上传、暂时保存与提交都在隔离的官方页面完成，提交后自动按课程重新同步。
 
-- 课程卡片网格、课程名称/代码/教师搜索
-- 必修/通识/选修分类筛选、仅看收藏
-- 收藏切换、课程详情、课表信息
-- 跳转学习通官方页面入口
+### 资料与下载
 
-### 学习中心
+- 主进程通过 Portal 会话流式下载，支持进度、取消、重试与再次下载。
+- 下载记录与本地文件校验表持久化在 SQLite。
+- PDF、图片、文本可在应用内预览；Office、压缩包与链接使用系统方式打开。
 
-- 按课程浏览章节与学习点，合并展示阅读、视频、测验、讨论任务与预计耗时
-- 学习点完成状态、章节完成数与课程总进度实时计算
-- 课程侧栏搜索、课程切换、章节折叠区域与进度环
-- 通过 JSON 学习快照导入课程、章节、学习点、作业和考试；明确标注“本地快照 · 非实时同步”
-- 未导入快照时提供明确的空状态与导入入口，不伪造远程课程数据
+### 学习通集成
 
-### 题目助手
+- 使用 `WebContentsView` 持久分区承载官方页面，不向远程页面注入 preload，不暴露 Node.js、文件系统或通用 IPC。
+- 课程、作业、考试、章节、通知、资料与课表通过页面解析读取。
+- 官方 OAuth/机构 API 尚未获得授权与文档，当前不将其标记为可用能力；详细边界见 [docs/CHAOXING_INTEGRATION.md](docs/CHAOXING_INTEGRATION.md)。
 
-- 本地题目卡新增、编辑、删除、搜索，支持课程、标签、答案与解析
-- 可按课程筛选，记录来源（手动录入、导入、AI 生成）
-- 可选接入用户自己的 OpenAI 兼容 API：自定义 Base URL、模型与 Key
-- AI Key 使用 Electron `safeStorage` 加密保存在本机；不会写入日志，也不会随任务数据上传
-- 仅当用户点击“生成思路”时才把当前题目发送给所配置的服务商；结果仅供参考，不自动提交作业或考试
+### 多账号与提醒
 
-### 任务中心
+- 账号凭据使用 Windows DPAPI（Electron `safeStorage`）加密保存，可保存多个账号。
+- 每个学习通账号使用独立 SQLite 工作区，按平台 UID 隔离，不覆盖历史库。
+- DDL 提醒同时支持进程内调度与 Windows 任务计划程序无头检查；应用完全退出后仍可由系统任务触发提醒（需系统任务已注册）。
+- 通知投递失败会持久化并按 1/5/15 分钟有界退避，最多 4 次；详见 [docs/WINDOWS_REMINDERS.md](docs/WINDOWS_REMINDERS.md)。
 
-- 任务新增、查看、编辑、完成、删除
-- 任务归属、优先级、类型、截止时间、备注；记录来源字段与手动修改字段
-- 本地完成与平台完成分别标记，后续导入不会覆盖本地完成
-- 变更历史保存在 `task_change_log`，可用于追溯导入、截止变化与手动编辑
-- 按截止时间排序，按课程/状态/优先级筛选
-- DDL 提醒规则编辑：提前 3 天、1 天、3 小时、1 小时及自定义分钟数
-- 逾期、今天、7 天内、之后分组
+### 其他
 
-### DDL 提醒
+- CSV/ICS/JSON 学习快照手动导入，不冒充实时同步。
+- 浅色/深色主题、100%/125%/150% 界面缩放、`Ctrl+K` 命令面板与全局搜索。
+- Windows 启动项与托盘常驻可选，关闭窗口最小化到托盘。
 
-- 使用 Electron 主进程 `Notification` 发送系统通知
-- 提醒规则持久化到 SQLite；任务完成、删除或截止时间变更时同步调整
-- 通知投递去重（`notification_deliveries`），同一任务同一提醒不会重复弹出
-- 应用运行期间每 30 秒检查一次；**应用完全退出后不会继续提醒**
-- Windows 系统级计划通知的可行性与限制见 [通知调研](docs/WINDOWS_NOTIFICATIONS.md) 与 [v0.4 PoC](docs/WINDOWS_NOTIFICATION_POC.md)；当前版本不把进程内定时器包装成系统计划任务
-- 重新启动时补发最近 10 分钟内错过的提醒（可在设置中关闭）
-- 系统通知不可用时仍会发送应用内提醒事件，不会静默丢失 DDL
-- 启动补发、下一条提醒时间会在设置页和首页同步信息中显示
-- 时区处理基于本机时区，日期在数据库中统一存储为 ISO 时间
+## 界面
 
-### 日历
+| 今天                                           | 课程                                             |
+| ---------------------------------------------- | ------------------------------------------------ |
+| ![今天](docs/screenshots/v0.5/today-light.png) | ![课程](docs/screenshots/v0.5/courses-light.png) |
 
-- 月视图和周视图
-- 月视图展示课程圆点与任务条目；周视图展示课程时间块与任务
-- 点击日期查看当天课程与截止任务；点击任务打开详情
-- 支持上一月/下一月、今天、返回当月
+| 作业                                           | 设置                                              |
+| ---------------------------------------------- | ------------------------------------------------- |
+| ![作业](docs/screenshots/v0.5/tasks-light.png) | ![设置](docs/screenshots/v0.5/settings-light.png) |
 
-### 学习通兼容层
-
-- 官方入口管理（内置入口 + 自定义 HTTPS 入口，可启用/停用）
-- 隔离的持久化浏览器会话：`persist:studynext-portal`
-- 使用 `WebContentsView` 打开官方页面，启用 sandbox、contextIsolation，关闭 nodeIntegration/webviewTag
-- 禁止远程页面访问 Node.js、本地数据库或预加载脚本
-- URL 白名单：仅允许 `https://*.chaoxing.com` 与 `https://*.xuexitong.com`
-- 拦截危险跳转、新窗口、webview 挂载、下载与权限请求
-- 登录状态提示、失败提示、在系统浏览器中打开的回退入口
-- 登录状态机区分 `unknown / logged_out / logged_in`；仅在官方页面路径级别判断，不读取密码、不注入登录脚本
-- 可配置校园 SSO 域名白名单；只允许 HTTPS、443、无 userinfo 的精确域名或子域
-- 导航诊断日志最多保留 30 条，只记录去除查询参数与片段后的 URL，不记录 Cookie、Token、账号或密码
-- 未配置授权数据源时显示 `not_configured`，并保留 CSV/ICS/JSON 手动导入
-
-### 真实接入边界
-
-- [学习通接入可行性报告](docs/CHAOXING_INTEGRATION_FEASIBILITY.md)：公开 OAuth 入口、个人开发者限制、`xuexitong-cli` 只读接口审查与未授权风险
-- v0.4.0 研究基线：[接入能力矩阵](docs/CHAOXING_ACCESS_MATRIX.md)、[接入研究](docs/CHAOXING_INTEGRATION_RESEARCH.md)、[Go/No-Go](docs/V0.4.0_GO_NO_GO.md)、[研究与开发计划](docs/V0.4.0_PLAN.md)
-- 当前不调用私有接口、不读取登录凭据、不把打开官方页面描述成同步成功；实时适配器的硬门槛见 Go/No-Go 文档
-- 未来只有取得正式授权后，才实现 `AuthorizedDataAdapter` 的实时数据拉取
-
-### 数据导入
-
-- JSON 学习快照：导入 `courses/chapters/points/homeworks/exams`，支持根节点或 `data` 包装，按稳定外部 ID 去重
-- 快照课程、章节、学习点和作业以 `import` 来源保存；同步状态明确显示“本地快照”，不会伪装成学习通实时授权同步
-- 同一外部 ID 重复导入会更新任务；截止时间变化会清理旧通知投递，并记录 `deadlineChanges`
-- 手动修改过的字段记录在 `manualFields`，后续导入保留本地修改并返回 `conflicts`；本地完成状态不会被平台返回覆盖
-- CSV：支持中英文字段别名，字段至少包含标题、截止时间；可选课程、优先级、类型、提醒
-- ICS：解析 VEVENT、DATE/DATE-TIME、UTC `Z`、`TZID`、DESCRIPTION、CATEGORIES
-- 导入按外部 UID/去重键避免重复任务；导入结果区分成功、部分成功和失败
-- 导入失败返回结构化错误，不会把失败描述为成功
-
-### 设置
-
-- 主题、关闭到托盘、开机启动（仅打包版注册系统登录项）
-- 通知开关、默认提醒时间、提醒补发、每周起始日
-- 测试通知
-- 学习通连接状态、官方入口管理、数据目录、演示数据恢复
-- AI 解题助手配置（启用/停用、Base URL、模型、API Key、清除 Key）
-- JSON 学习快照导入与导入结果
-- 应用版本与运行平台信息
+更多截图见 [docs/screenshots/v0.5](docs/screenshots/v0.5)。
 
 ## 技术栈
 
-| 层     | 技术                                       | 选择原因                                                                                        |
-| ------ | ------------------------------------------ | ----------------------------------------------------------------------------------------------- |
-| 桌面壳 | Electron 45.3.0                            | Windows 稳定、支持 `WebContentsView` 与 Node 内置 SQLite；0.3.0 已在真实 E2E 中验证 Electron 45 |
-| 构建   | electron-vite 6 + Vite 8                   | 主进程/预加载/渲染器统一构建，开发热更新                                                        |
-| UI     | React 19 + TypeScript 5.9 + Tailwind CSS 4 | 严格类型、组件化、快速迭代                                                                      |
-| 数据   | Node `node:sqlite`（`DatabaseSync`）       | 免原生模块 ABI 编译，打包简单，适合本地单用户数据库                                             |
-| 校验   | Zod 4                                      | IPC 边界运行时校验                                                                              |
-| AI     | OpenAI 兼容 HTTP API + safeStorage         | 用户自带 Key，支持自定义 Base URL/模型；Key 加密存储，不内置任何服务商凭据                      |
-| 日期   | date-fns 4 + date-fns-tz 3                 | 本地时区、日历运算、ICS TZID                                                                    |
-| 测试   | Vitest 5 + Playwright 1.65                 | 领域/存储/调度单测 + 真实 Electron E2E                                                          |
-| 打包   | electron-builder 26                        | NSIS Windows 安装包                                                                             |
+| 层       | 技术                                                                                 |
+| -------- | ------------------------------------------------------------------------------------ |
+| 桌面框架 | Electron 45.3.0                                                                      |
+| 构建     | electron-vite 6、Vite 8                                                              |
+| UI       | React 19、Tailwind 4、自定义 CSS 设计 token                                          |
+| 语言     | TypeScript 5.9（`strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`） |
+| 数据     | Electron 内置 `node:sqlite`（`DatabaseSync`），不引入原生模块                        |
+| 测试     | Vitest（单元）、Playwright（Electron E2E）                                           |
+| 打包     | electron-builder（Windows NSIS）                                                     |
 
 ## 快速开始
 
-要求：Windows 10/11、Node.js 22+、npm 10+。
+要求 Windows 10/11、Node.js 22+、npm 10+。
 
 ```powershell
-cd studynext
 npm install
 npm run dev
 ```
 
-如果 npm 的安全策略拦截了 Electron 的安装脚本，electron 目录可能缺少二进制，可手动执行：
+常用命令：
 
 ```powershell
-node node_modules/electron/install.js
+npm run typecheck    # 主进程 + 渲染进程类型检查
+npm test             # Vitest 单元测试
+npm run test:e2e     # 构建后运行 Playwright Electron E2E
+npm run build        # 类型检查 + 生产构建
+npm run build:win    # 构建 Windows NSIS 安装包到 release/
+npm run verify:release
+npm run format:check
 ```
 
-如果终端设置了 `ELECTRON_RUN_AS_NODE=1`，启动 GUI 前需要清除：
-
-```powershell
-Remove-Item Env:ELECTRON_RUN_AS_NODE
-```
-
-### 常用命令
-
-```powershell
-npm run dev        # 开发模式
-npm run typecheck  # 严格 TypeScript 检查
-npm test           # Vitest 单元测试
-npm run test:e2e   # 构建后运行 Playwright Electron E2E
-npm run build      # 类型检查 + 生产构建
-npm run build:win  # 生成 Windows NSIS 安装包
-```
-
-### 已生成构建产物
-
-- 安装包：`release/StudyNext-Setup-0.3.0.exe`（125,169,347 bytes，约 119.37 MiB）
-- 免安装目录：`release/win-unpacked/StudyNext.exe`
-- SHA-256：`FCAFEED57E798D47E94F5ECF3DDC18B46BDD7BA63AD68B07FA25BC1EBE5A54D1`
-
-安装包当前未做代码签名。产物已用真实 Electron 启动验证：打包版可正常加载 asar 内的主进程、preload 与渲染资源。
-
-### 数据位置
-
-默认数据库：
+如果当前环境设置了 `ELECTRON_RUN_AS_NODE=1`，启动 GUI 或 E2E 前必须清除。Playwright 需要：
 
 ```text
-%LOCALAPPDATA%\StudyNext\studynext.sqlite
+--no-sandbox --disable-gpu --user-data-dir=<工作区内可写目录>
 ```
 
-窗口状态：
+并设置 `STUDYNEXT_DATA_DIR` 指向同一目录，避免系统临时目录的 Chromium 锁权限问题。
 
-```text
-%LOCALAPPDATA%\StudyNext\window-state.json
-```
+## 数据位置
 
-可用环境变量覆盖数据目录（便于测试或便携使用）：
+默认数据目录按以下优先级选择：
 
-```powershell
-$env:STUDYNEXT_DATA_DIR = "D:\StudyNextData"
-npm run dev
-```
+1. `STUDYNEXT_DATA_DIR` 环境变量；
+2. `%LOCALAPPDATA%\StudyNext`；
+3. `%APPDATA%\StudyNext`。
 
-数据目录按 Windows 的 `%LOCALAPPDATA%\StudyNext`、应用数据目录依次尝试。
-**不会静默回退到系统临时目录**：所有候选路径均不可写时，应用会显示“无法创建本地数据目录”并退出，
-同时提示设置 `STUDYNEXT_DATA_DIR`。这避免重启后误以为数据丢失。
+目录内主要文件：
 
-### 演示数据
+- `studynext.sqlite`：主数据库；
+- `account-workspaces.json`：多账号工作区注册表；
+- `workspaces/`：每账号独立数据库；
+- `window-state.json`：窗口尺寸与位置；
+- `backups/`：手动/迁移备份。
 
-首次启动自动写入 5 门课程、15 项任务、15 个章节与 60 个学习点。设置 → 数据 → “恢复演示数据”可一键重建课程、章节、学习点和任务；题库不会被清空。执行前请确认当前演示数据不再需要。
+应用不会自动把数据写入系统临时目录。删除或迁移数据前请先备份整个数据目录。
 
-## 测试与验收
+## 安全与边界
 
-| 验收项                    | 实现/验证                                                                                                                                           |
-| ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 无学习通账号可启动        | E2E 启动真实 Electron，无登录步骤                                                                                                                   |
-| 首页显示模拟数据          | E2E 断言 5 门课程、通知与任务统计                                                                                                                   |
-| 任务增删改查              | E2E 新建、编辑、完成、删除                                                                                                                          |
-| 重启数据一致              | E2E 关闭并重新启动后断言任务仍在                                                                                                                    |
-| DDL 排序正确              | 单元测试覆盖 `sortTasksByDue`、逾期/今天/未来分组                                                                                                   |
-| 修改截止后提醒更新        | 单元测试覆盖提醒重算与旧投递清理                                                                                                                    |
-| 不产生重复通知            | 单元测试覆盖投递 claim/release 与去重                                                                                                               |
-| 网络/权限失败不假成功     | `SyncService` 未配置固定返回 `not_configured`，导入返回结构化失败                                                                                   |
-| 第三方页面无 Electron API | 单测校验安全参数；Portal E2E 在真实 WebContentsView 内断言 `require/process/module/window.studynext/ipcRenderer` 均不可见，并验证白名单外跳转被拦截 |
-| 生成 Windows 安装包       | `npm run build:win` 生成 NSIS 安装程序                                                                                                              |
-
-最终自动化结果：Vitest **9 个文件 / 47 项全部通过**；Playwright **5 个规格文件 / 6 项测试全部通过**（应用主流程、学习中心/题库/快照导入与 SSO 设置、Portal 隔离与跳转拦截、响应式布局、浅色/深色视图截图）。详细记录见 [测试报告](docs/TEST_REPORT.md)。
+- 远程页面只能在隔离的 `WebContentsView` 中打开，所有 URL 进入 Portal 前后都要经过白名单校验。
+- 渲染器不直接访问学习通接口，不持有登录态，不接触 Node.js。
+- 不记录账号、密码、Cookie、Token 或完整敏感 URL。
+- 学习通能力以 [docs/CHAOXING_INTEGRATION.md](docs/CHAOXING_INTEGRATION.md) 的矩阵为准；未配置、失败或部分成功必须如实显示。
+- AI 解题功能已从产品中移除；旧数据库中的 `questions`/`ai_config` 仅做只读迁移兼容，不得恢复入口。
 
 ## 项目结构
 
 ```text
-studynext/
-├─ src/
-│  ├─ main/
-│  │  ├─ index.ts              # 应用生命周期、窗口、托盘、通知
-│  │  ├─ ipc.ts                # IPC 路由与输入校验
-│  │  ├─ storage/store.ts      # SQLite schema、迁移、DAO、演示数据
-│  │  ├─ notifications/        # DDL 提醒调度与去重
-│  │  ├─ integrations/         # CSV/ICS/JSON 快照导入、AI 服务、授权适配器接口
-│  │  ├─ portal/               # WebContentsView 隔离、URL 白名单、安全状态
-│  │  └─ window-state.ts       # 窗口位置/大小记忆
-│  ├─ preload/                 # contextBridge 最小 API
-│  ├─ renderer/                # React 页面与组件（学习中心、题库、日历等）
-│  └─ shared/                  # 领域类型、常量、领域函数、IPC 合约
-├─ tests/
-│  ├─ unit/                    # 领域、存储、调度、导入、AI、快照、安全、同步单测
-│  ├─ e2e/                     # 真实 Electron：主流程、学习中心、Portal、响应式、视图
-│  └─ fixtures/                # Portal 隔离测试用本地 HTTPS 证书
-├─ docs/                       # 调研、架构、测试报告、路线图、截图
-├─ build/                      # 应用图标
-├─ resources/                  # 托盘图标与运行时图标
-└─ electron-builder.yml        # NSIS 打包配置
+src/main/        主进程：窗口、托盘、SQLite、IPC、Portal、同步、通知
+src/preload/     contextBridge 暴露的最小类型化 API
+src/renderer/    React 渲染器：今天/课程/作业三顶层工作区
+src/shared/      领域类型、IPC 合约、纯函数与共享常量
+tests/unit/      Vitest 单元测试
+tests/e2e/       Playwright Electron E2E
+docs/            架构、集成、测试、状态与设计文档
+build/           NSIS 安装脚本与图标
+scripts/         发布清单与校验脚本
 ```
-
-## 安全与隐私边界
-
-- 渲染器只通过 `contextBridge` 暴露最小 `window.studynext` API，不暴露通用 `ipcRenderer`。
-- 主窗口 `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`。
-- 学习通页面运行在独立 `WebContentsView` 和独立持久化分区中，不注入 preload。
-- 远程页面不能读取本地 SQLite、文件系统或 Electron API。
-- 登录凭据不写入日志、SQLite 或应用源码；账号登录由官方页面自行处理。
-- 不实现自动刷课、伪造签到、考试代答、验证码绕过、反爬规避、私有协议破解或未授权接口访问。
-- 未获授权数据同步时显示“未配置/暂不可用”，不伪造成功状态。
-- 学习快照是用户主动导入的本地 JSON，不代表已连接学习通；界面会明确标注“本地快照 · 非实时同步”。
-- AI Key 使用 `safeStorage` 加密存储；只有用户主动点击生成时才将当前题目发送给所配置的 OpenAI 兼容服务商。
-- 数据默认只保存在本机，不主动上传。
-
-## 已知限制
-
-- 学习通开放平台目前没有面向个人开发者公开可申请的 OAuth/课程作业接口；本项目没有接入未授权私有接口。
-- 官方网页的 DOM、登录流程与风控由学习通控制，应用只托管页面，不解析页面内容。
-- 系统通知依赖 Windows 通知设置；通知中心被关闭时，应用内仍会显示提醒事件，但系统横幅可能不出现。
-- 完全退出应用后不会运行提醒；只有重新启动时才补发最近 10 分钟内错过的提醒。
-- 月视图中的课程按每周重复规则展示，暂不处理单双周、调休与节假日。
-- 学习快照导入是本地数据桥，不包含自动抓取、自动签到、自动答题或学习通私有接口调用。
-- 题目助手的 AI 输出可能不准确；应用不会自动提交作业、考试或代替用户作答。
-- 当前安装包未做代码签名，Windows SmartScreen 可能显示未知发布者提示。
 
 ## 文档
 
-- [交付报告](docs/DELIVERY.md)
-- [调研与许可记录](docs/research.md)
-- [架构设计](docs/ARCHITECTURE.md)
-- [测试报告](docs/TEST_REPORT.md)
-- [会话优化落地记录](docs/OPTIMIZATION.md)
-- [开发问题记录与开源项目审查](docs/ISSUES.md)
-- [v0.4.0 研究与开发计划](docs/V0.4.0_PLAN.md)
-- [学习通数据接入能力矩阵](docs/CHAOXING_ACCESS_MATRIX.md)
-- [学习通真实接入研究报告](docs/CHAOXING_INTEGRATION_RESEARCH.md)
-- [Windows 通知 PoC](docs/WINDOWS_NOTIFICATION_POC.md)
-- [v0.4.0 Go/No-Go](docs/V0.4.0_GO_NO_GO.md)
-- [下一阶段计划](docs/ROADMAP.md)
-- [工程约束与 Agent 指南](AGENTS.md)
+- [AGENTS.md](AGENTS.md)：工程约束与 Agent 工作指南
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：进程架构、数据模型、同步与提醒设计
+- [docs/FEATURE_MAP.md](docs/FEATURE_MAP.md)：功能实现方式与真实程度
+- [docs/CHAOXING_INTEGRATION.md](docs/CHAOXING_INTEGRATION.md)：学习通能力矩阵、协议与安全边界
+- [docs/WINDOWS_REMINDERS.md](docs/WINDOWS_REMINDERS.md)：系统级 DDL 提醒实现与限制
+- [docs/TESTING.md](docs/TESTING.md)：测试策略、命令与最近基线
+- [docs/ISSUES.md](docs/ISSUES.md)：已知问题与工程教训
+- [docs/ROADMAP.md](docs/ROADMAP.md)：后续路线与验收原则
+- [docs/STATUS.md](docs/STATUS.md)：当前开发状态与待办
+- [docs/CHANGELOG.md](docs/CHANGELOG.md)：版本变更记录
 
-## License
+## 已知限制
 
-MIT。第三方参考项目的许可证与可复用范围见 [docs/research.md](docs/research.md)。
+- 安装包尚未签名，未接入自动更新。
+- 真实 Windows 安装/覆盖升级/卸载与真实学习通账号全流程验收仍需在目标环境执行。
+- 学习通页面结构变化可能导致解析失败；解析器需要随平台页面更新维护。
+- 部分作业不返回提交时间；详情页未完整读取时保持 `unread`，不猜测。
+- 资料分页、复杂课表（单双周/调休/多教师）等场景仍需继续验证与建模。
+- 应用图标为占位品牌图标，正式发布前应做视觉定稿。
+
+## 许可证
+
+MIT，见 [LICENSE](LICENSE)。

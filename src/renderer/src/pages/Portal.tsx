@@ -1,14 +1,15 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type JSX } from 'react'
 import {
   ArrowLeft,
-  ArrowRight,
+  ChevronLeft,
+  ChevronRight,
   Download,
   ExternalLink,
-  FolderOpen,
   Globe2,
   LockKeyhole,
   RefreshCw,
   ShieldCheck,
+  SlidersHorizontal,
   Trash2,
   UploadCloud,
   X
@@ -16,18 +17,21 @@ import {
 import type {
   OfficialEntry,
   PortalDownload,
-  PortalLoginState,
   PortalSecurityState,
   PortalState,
   PortalUploadEvent
 } from '@shared/types'
 import type { ToastKind } from '../components/ToastStack'
+import { hasOpenModal } from '../components/modal-focus'
 import { errorMessage } from '../lib/format'
 
 interface PortalProps {
   entries: OfficialEntry[]
   launchEntryId: string | null
+  uiZoom?: number
   onLaunchHandled: () => void
+  onClose: () => void
+  onSessionCleared?: () => Promise<void> | void
   notify: (kind: ToastKind, message: string) => void
 }
 
@@ -45,12 +49,6 @@ const EMPTY_STATE: PortalState = {
   error: null
 }
 
-const LOGIN_STATE_LABEL: Record<PortalLoginState, string> = {
-  unknown: '登录状态未知',
-  logged_out: '未登录',
-  logged_in: '已登录'
-}
-
 const NAV_ACTION_LABEL: Record<string, string> = {
   open: '打开',
   navigate: '跳转',
@@ -58,7 +56,23 @@ const NAV_ACTION_LABEL: Record<string, string> = {
   popup: '弹窗'
 }
 
-export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: PortalProps) {
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0 B'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
+  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
+  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
+}
+
+export function Portal({
+  entries,
+  launchEntryId,
+  uiZoom = 1,
+  onLaunchHandled,
+  onClose,
+  onSessionCleared,
+  notify
+}: PortalProps): JSX.Element {
   const [state, setState] = useState<PortalState>(EMPTY_STATE)
   const [security, setSecurity] = useState<PortalSecurityState | null>(null)
   const [boundsReady, setBoundsReady] = useState(false)
@@ -66,6 +80,7 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
   const [busy, setBusy] = useState(false)
   const [downloads, setDownloads] = useState<PortalDownload[]>([])
   const [showDownloads, setShowDownloads] = useState(false)
+  const [showTools, setShowTools] = useState(false)
   const [uploadStatus, setUploadStatus] = useState<PortalUploadEvent | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
   const api = window.studynext
@@ -103,10 +118,41 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
       unsubscribe()
       unsubscribeDownload()
       unsubscribeUpload()
-      void api.portal.close()
+      void api.portal.hide()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      if (hasOpenModal()) return
+      if (confirmClear) {
+        event.preventDefault()
+        event.stopPropagation()
+        setConfirmClear(false)
+        return
+      }
+      if (showDownloads) {
+        event.preventDefault()
+        event.stopPropagation()
+        setShowDownloads(false)
+        return
+      }
+      if (showTools) {
+        event.preventDefault()
+        event.stopPropagation()
+        setShowTools(false)
+        return
+      }
+      event.preventDefault()
+      event.stopPropagation()
+      void api.portal.hide()
+      onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [api.portal, confirmClear, onClose, showDownloads, showTools])
 
   useEffect(() => {
     if (!uploadStatus || uploadStatus.state === 'started') return
@@ -134,17 +180,18 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
         .catch(() => undefined)
     }
     syncBounds()
+    const frame = window.requestAnimationFrame(syncBounds)
+    const retryTimer = window.setTimeout(syncBounds, 260)
     const observer = new ResizeObserver(syncBounds)
     observer.observe(node)
     window.addEventListener('resize', syncBounds)
-    const scrollParent = node.closest('.main-scroll')
-    scrollParent?.addEventListener('scroll', syncBounds, { passive: true })
     return () => {
+      window.cancelAnimationFrame(frame)
+      window.clearTimeout(retryTimer)
       observer.disconnect()
       window.removeEventListener('resize', syncBounds)
-      scrollParent?.removeEventListener('scroll', syncBounds)
     }
-  }, [api.portal, state.url])
+  }, [api.portal, state.url, showDownloads, showTools, uploadStatus, uiZoom])
 
   useEffect(() => {
     if (!launchEntryId || !boundsReady) return
@@ -156,9 +203,12 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
 
   const active = state.url.length > 0 && state.state !== 'idle'
   const activeEntry = entries.find((entry) => entry.id === state.entryId)
+  const isLoading = state.state === 'loading'
+  const activeDownloadCount = downloads.filter((item) => item.state === 'progressing').length
 
   const openEntry = async (entry: OfficialEntry): Promise<void> => {
     setBusy(true)
+    setShowTools(false)
     try {
       await api.portal.open(entry.id)
     } catch (error) {
@@ -181,155 +231,143 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
     }
   }
 
+  const handleClose = (): void => {
+    void api.portal.hide()
+    onClose()
+  }
+
   const loginLabel =
-    state.loginState === 'logged_in'
+    state.loginState === 'logged_in' || state.loggedIn === true
       ? '已登录'
-      : state.loginState === 'logged_out'
+      : state.loginState === 'logged_out' || state.loggedIn === false
         ? '未登录'
-        : state.loggedIn === true
-          ? '已登录'
-          : state.loggedIn === false
-            ? '未登录'
-            : '登录状态未知'
-  const statusClass =
-    state.state === 'ready'
-      ? 'ready'
-      : state.state === 'error' || state.state === 'blocked'
-        ? 'error'
-        : ''
+        : null
+
+  const cleanUrl = (state.displayUrl || '').replace(/^https?:\/\//i, '')
 
   return (
-    <div className="portal-page">
-      <header className="page-header" style={{ marginBottom: 12 }}>
-        <div className="page-header-copy">
-          <div className="eyebrow">
-            <Globe2 size={12} /> 学习通兼容层
-          </div>
-          <h1 className="page-title">官方页面</h1>
-          <p className="page-subtitle">
-            在隔离的浏览器视图中手动登录学习通。远程页面无法访问本机 Node.js、数据库或文件系统。
-          </p>
-        </div>
-        <div className="header-actions">
-          <span className="hero-note">
-            <LockKeyhole size={13} /> 隔离会话 · 手动登录
-          </span>
-        </div>
-      </header>
+    <div className="studio-portal">
+      <div className="studio-portal-bar">
+        <button
+          type="button"
+          className="portal-return-btn"
+          onClick={handleClose}
+          title="返回 StudyNext（Esc）"
+        >
+          <ArrowLeft size={14} />
+          <span>返回应用</span>
+        </button>
 
-      <div className="portal-toolbar">
-        <button
-          type="button"
-          className="portal-nav-btn"
-          onClick={() => void runAction(() => api.portal.back())}
-          disabled={!active || !state.canGoBack || busy}
-          aria-label="后退"
-        >
-          <ArrowLeft />
-        </button>
-        <button
-          type="button"
-          className="portal-nav-btn"
-          onClick={() => void runAction(() => api.portal.forward())}
-          disabled={!active || !state.canGoForward || busy}
-          aria-label="前进"
-        >
-          <ArrowRight />
-        </button>
-        <button
-          type="button"
-          className="portal-nav-btn"
-          onClick={() => void runAction(() => api.portal.reload())}
-          disabled={!active || busy}
-          aria-label="刷新"
-        >
-          <RefreshCw />
-        </button>
-        <button
-          type="button"
-          className="portal-nav-btn"
-          onClick={() => setShowDownloads((value) => !value)}
-          title="下载管理器"
-          aria-label="下载管理器"
-        >
-          <Download />
-          {downloads.some((item) => item.state === 'progressing') ? (
-            <span className="portal-download-dot" />
-          ) : null}
-        </button>
-        <div className="portal-url" title={state.url || '尚未打开官方页面'}>
-          <ShieldCheck />
-          <span>{state.displayUrl || '尚未打开官方页面'}</span>
-        </div>
-        <span className={`portal-status ${statusClass}`}>
-          {state.state === 'loading'
-            ? '加载中'
-            : state.state === 'ready'
-              ? '已加载'
-              : state.state === 'blocked'
-                ? '已拦截'
-                : state.state === 'error'
-                  ? '加载失败'
-                  : '待访问'}
-        </span>
-        <span className={`portal-status ${state.loggedIn === true ? 'ready' : ''}`}>
-          {loginLabel}
-        </span>
-        <button
-          type="button"
-          className="portal-nav-btn"
-          onClick={() => void runAction(() => api.portal.openInitialInBrowser())}
-          disabled={!active || busy}
-          title="在系统浏览器中打开当前页面"
-          aria-label="在系统浏览器中打开"
-        >
-          <ExternalLink />
-        </button>
-        {confirmClear ? (
-          <>
-            <button
-              type="button"
-              className="btn small danger"
-              onClick={() => void runAction(() => api.portal.clearSession(), '隔离会话已清除')}
-              disabled={busy}
-            >
-              确认清除
-            </button>
-            <button
-              type="button"
-              className="btn small"
-              onClick={() => setConfirmClear(false)}
-              disabled={busy}
-            >
-              取消
-            </button>
-          </>
-        ) : (
+        <span className="studio-portal-sep" aria-hidden="true" />
+
+        <div className="studio-portal-nav-group" role="group" aria-label="页面导航">
           <button
             type="button"
-            className="portal-nav-btn"
-            onClick={() => setConfirmClear(true)}
-            title="清除隔离会话中的 Cookie 与缓存"
-            aria-label="清除隔离会话"
+            className="studio-portal-icon"
+            onClick={() => void runAction(() => api.portal.back())}
+            disabled={!active || !state.canGoBack || busy}
+            title="后退"
+            aria-label="后退"
           >
-            <Trash2 />
+            <ChevronLeft size={15} />
           </button>
-        )}
-        <button
-          type="button"
-          className="portal-nav-btn"
-          onClick={() => void runAction(() => api.portal.close())}
-          disabled={!active || busy}
-          title="关闭当前官方页面"
-          aria-label="关闭当前页面"
-        >
-          <X />
-        </button>
+          <button
+            type="button"
+            className="studio-portal-icon"
+            onClick={() => void runAction(() => api.portal.forward())}
+            disabled={!active || !state.canGoForward || busy}
+            title="前进"
+            aria-label="前进"
+          >
+            <ChevronRight size={15} />
+          </button>
+          <button
+            type="button"
+            className="studio-portal-icon"
+            onClick={() => void runAction(() => api.portal.reload())}
+            disabled={!active || busy}
+            title="刷新页面"
+            aria-label="刷新"
+          >
+            <RefreshCw size={13} className={isLoading ? 'spin' : undefined} />
+          </button>
+        </div>
+
+        <div className="studio-portal-omnibox" title={state.url || '学习通隔离会话'}>
+          <ShieldCheck
+            size={13}
+            className={
+              state.state === 'error' || state.state === 'blocked'
+                ? 'omnibox-lock error'
+                : 'omnibox-lock'
+            }
+          />
+          {state.title ? <span className="omnibox-title">{state.title}</span> : null}
+          {state.title && cleanUrl ? <span className="omnibox-sep">·</span> : null}
+          <span className="omnibox-url">{cleanUrl || '正在准备学习通官方页面…'}</span>
+          {isLoading ? (
+            <span className="omnibox-pill loading">加载中</span>
+          ) : state.state === 'blocked' ? (
+            <span className="omnibox-pill danger">已拦截</span>
+          ) : state.state === 'error' ? (
+            <span className="omnibox-pill danger">加载失败</span>
+          ) : loginLabel ? (
+            <span className={loginLabel === '已登录' ? 'omnibox-pill ok' : 'omnibox-pill'}>
+              {loginLabel}
+            </span>
+          ) : null}
+        </div>
+
+        <div className="studio-portal-actions">
+          <button
+            type="button"
+            className={showDownloads ? 'studio-portal-btn active' : 'studio-portal-btn'}
+            onClick={() => {
+              setShowDownloads((open) => !open)
+              setShowTools(false)
+            }}
+            aria-expanded={showDownloads}
+            title="下载管理器"
+          >
+            <Download size={13} />
+            <span>下载</span>
+            {activeDownloadCount > 0 ? (
+              <span className="studio-pill-badge">{activeDownloadCount}</span>
+            ) : null}
+          </button>
+
+          <button
+            type="button"
+            className="studio-portal-btn"
+            onClick={() => void runAction(() => api.portal.openInitialInBrowser())}
+            disabled={!active || busy}
+            title="在系统默认浏览器中打开当前页面"
+          >
+            <ExternalLink size={13} />
+            <span>浏览器打开</span>
+          </button>
+
+          <button
+            type="button"
+            className={showTools ? 'studio-portal-icon active' : 'studio-portal-icon'}
+            onClick={() => {
+              setShowTools((open) => !open)
+              setShowDownloads(false)
+            }}
+            aria-expanded={showTools}
+            aria-label="页面入口与会话诊断"
+            title="快捷入口与会话诊断"
+          >
+            <SlidersHorizontal size={14} />
+          </button>
+        </div>
+
+        {isLoading ? <span className="studio-portal-progress" aria-hidden="true" /> : null}
       </div>
 
       {uploadStatus ? (
-        <div className={`portal-upload-status ${uploadStatus.state}`}>
-          <UploadCloud />
+        <div className={`studio-portal-banner ${uploadStatus.state}`}>
+          <UploadCloud size={14} />
           <span>
             <strong>
               {uploadStatus.state === 'started'
@@ -339,36 +377,73 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
                   : '附件上传失败'}
             </strong>{' '}
             {uploadStatus.message}
-            {uploadStatus.state === 'started' ? '；可在官方附件对话框中取消或重新选择文件' : ''}
           </span>
-          {uploadStatus.state === 'started' ? (
-            <span className="portal-upload-bar" aria-hidden="true" />
+        </div>
+      ) : null}
+
+      {state.error ? (
+        <div
+          className={
+            state.state === 'error' || state.state === 'blocked'
+              ? 'studio-portal-banner error'
+              : 'studio-portal-banner'
+          }
+        >
+          <LockKeyhole size={14} />
+          <span>
+            {state.state === 'blocked' ? (
+              <strong>已阻止不安全跳转：</strong>
+            ) : state.state === 'error' ? (
+              <strong>官方页面未能完成加载：</strong>
+            ) : null}
+            {state.error}
+          </span>
+          {state.state === 'error' ? (
+            <button
+              type="button"
+              className="studio-action-pill"
+              onClick={() => void runAction(() => api.portal.openInitialInBrowser())}
+            >
+              改用系统浏览器
+            </button>
           ) : null}
         </div>
       ) : null}
 
       {showDownloads ? (
-        <section className="portal-downloads">
-          <div className="portal-downloads-head">
-            <strong>下载管理器</strong>
-            <span>文件保存到系统“下载/StudyNext”目录；下载由隔离会话携带登录态完成。</span>
-            <button
-              type="button"
-              className="text-link"
-              disabled={downloads.every((item) => item.state === 'progressing')}
-              onClick={() => {
-                void api.portal
-                  .clearDownloads()
-                  .then(() => api.portal.downloads())
-                  .then(setDownloads)
-                  .catch((error: unknown) => notify('error', errorMessage(error)))
-              }}
-            >
-              清空已完成
-            </button>
+        <section className="studio-portal-drawer">
+          <div className="studio-portal-drawer-head">
+            <div>
+              <strong>下载管理</strong>
+              <span>文件保存在系统下载目录 / StudyNext，携带当前隔离会话登录态。</span>
+            </div>
+            <div className="studio-portal-drawer-actions">
+              <button
+                type="button"
+                className="text-link"
+                disabled={downloads.every((item) => item.state === 'progressing')}
+                onClick={() => {
+                  void api.portal
+                    .clearDownloads()
+                    .then(() => api.portal.downloads())
+                    .then(setDownloads)
+                    .catch((error: unknown) => notify('error', errorMessage(error)))
+                }}
+              >
+                清空已完成
+              </button>
+              <button
+                type="button"
+                className="studio-portal-icon"
+                aria-label="关闭下载面板"
+                onClick={() => setShowDownloads(false)}
+              >
+                <X size={14} />
+              </button>
+            </div>
           </div>
           {downloads.length === 0 ? (
-            <div className="portal-download-empty">尚无下载任务。可在资料中心点击“下载”。</div>
+            <div className="studio-portal-drawer-empty">暂无下载任务。</div>
           ) : (
             <div className="portal-download-list">
               {downloads.map((item) => {
@@ -384,7 +459,7 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
                     <div className="portal-download-state">
                       {item.state === 'progressing'
                         ? percent === null
-                          ? `${formatBytes(item.receivedBytes)}`
+                          ? formatBytes(item.receivedBytes)
                           : `${percent}% · ${formatBytes(item.receivedBytes)} / ${formatBytes(item.totalBytes)}`
                         : item.state === 'completed'
                           ? `已完成 · ${formatBytes(item.receivedBytes)}`
@@ -392,38 +467,45 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
                             ? '已取消'
                             : '中断'}
                     </div>
-                    {item.state === 'progressing' ? (
-                      <div className="portal-download-progress">
-                        <span style={{ width: `${percent ?? 12}%` }} />
-                      </div>
-                    ) : null}
                     <div className="portal-download-actions">
                       {item.state === 'completed' ? (
                         <>
                           <button
                             type="button"
                             className="text-link"
-                            onClick={() => void api.portal.openDownload(item.id).catch((error: unknown) => notify('error', errorMessage(error)))}
+                            onClick={() =>
+                              void api.portal
+                                .openDownload(item.id)
+                                .catch((error: unknown) => notify('error', errorMessage(error)))
+                            }
                           >
                             打开
                           </button>
                           <button
                             type="button"
                             className="text-link"
-                            onClick={() => void api.portal.revealDownload(item.id).catch((error: unknown) => notify('error', errorMessage(error)))}
+                            onClick={() =>
+                              void api.portal
+                                .revealDownload(item.id)
+                                .catch((error: unknown) => notify('error', errorMessage(error)))
+                            }
                           >
-                            所在文件夹
+                            文件夹
                           </button>
                         </>
                       ) : item.state === 'progressing' ? (
                         <button
                           type="button"
                           className="text-link"
-                          onClick={() => void api.portal.cancelDownload(item.id).catch((error: unknown) => notify('error', errorMessage(error)))}
+                          onClick={() =>
+                            void api.portal
+                              .cancelDownload(item.id)
+                              .catch((error: unknown) => notify('error', errorMessage(error)))
+                          }
                         >
                           取消
                         </button>
-                      ) : item.state === 'interrupted' || item.state === 'cancelled' ? (
+                      ) : (
                         <button
                           type="button"
                           className="text-link"
@@ -437,7 +519,7 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
                         >
                           重试
                         </button>
-                      ) : null}
+                      )}
                       {item.state !== 'progressing' ? (
                         <button
                           type="button"
@@ -450,7 +532,7 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
                               .catch((error: unknown) => notify('error', errorMessage(error)))
                           }}
                         >
-                          删除记录
+                          删除
                         </button>
                       ) : null}
                     </div>
@@ -462,185 +544,121 @@ export function Portal({ entries, launchEntryId, onLaunchHandled, notify }: Port
         </section>
       ) : null}
 
-      {state.error ? (
-        <div className="sync-banner" style={{ marginBottom: 10 }}>
-          <LockKeyhole />
-          <span>
-            <strong>
-              {state.state === 'blocked' ? '已阻止不安全跳转。' : '官方页面未能完成加载。'}
-            </strong>{' '}
-            {state.error}
-            {state.state === 'error' ? (
+      {showTools ? (
+        <section className="studio-portal-drawer">
+          <div className="studio-portal-drawer-head">
+            <div>
+              <strong>快捷入口与会话安全</strong>
+              <span>
+                隔离分区：{security?.partition ?? 'persist:studynext-portal'} ·
+                仅允许学习通官方及可信校园域名
+              </span>
+            </div>
+            <div className="studio-portal-drawer-actions">
+              {confirmClear ? (
+                <>
+                  <button
+                    type="button"
+                    className="btn small danger"
+                    onClick={() =>
+                      void runAction(async () => {
+                        await api.portal.clearSession()
+                        await onSessionCleared?.()
+                      }, '隔离会话已清除')
+                    }
+                    disabled={busy}
+                  >
+                    确认清除会话
+                  </button>
+                  <button
+                    type="button"
+                    className="btn small"
+                    onClick={() => setConfirmClear(false)}
+                  >
+                    取消
+                  </button>
+                </>
+              ) : (
+                <button type="button" className="btn small" onClick={() => setConfirmClear(true)}>
+                  <Trash2 size={12} /> 清除会话 Cookie
+                </button>
+              )}
               <button
                 type="button"
-                className="text-link"
-                style={{ marginLeft: 8 }}
-                onClick={() => void runAction(() => api.portal.openInitialInBrowser())}
+                className="studio-portal-icon"
+                aria-label="关闭工具面板"
+                onClick={() => setShowTools(false)}
               >
-                改用系统浏览器
+                <X size={14} />
               </button>
-            ) : null}
-          </span>
-        </div>
-      ) : null}
-
-      <details className="portal-audit">
-        <summary>
-          导航诊断 · {state.navigationLog.length} 条记录（URL 已去除查询参数与片段）
-        </summary>
-        <div className="portal-audit-head">
-          <span>只记录页面跳转，不记录账号、密码或 Cookie。</span>
-          <button
-            type="button"
-            className="text-link"
-            disabled={state.navigationLog.length === 0}
-            onClick={() => {
-              void api.portal
-                .clearNavigationLog()
-                .then(() => api.portal.state())
-                .then((next) => setState(next))
-                .catch((error: unknown) => notify('error', errorMessage(error)))
-            }}
-          >
-            清空记录
-          </button>
-        </div>
-        {state.navigationLog.length === 0 ? (
-          <div className="portal-audit-empty">尚无导航记录。</div>
-        ) : (
-          <div className="portal-audit-list">
-            {state.navigationLog.map((item) => (
-              <div className={`portal-audit-row ${item.allowed ? '' : 'blocked'}`} key={item.id}>
-                <span className="portal-audit-action">
-                  {NAV_ACTION_LABEL[item.action] ?? item.action}
-                </span>
-                <span className="portal-audit-url" title={item.displayUrl}>
-                  {item.displayUrl}
-                </span>
-                <span className="portal-audit-state">
-                  {item.allowed ? '允许' : `拦截：${item.reason ?? '域名未授权'}`}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </details>
-
-      {active ? (
-        <div className="portal-stage" ref={stageRef} style={{ minHeight: 320 }}>
-          <div className="portal-placeholder">
-            <Globe2 />
-            <div style={{ fontSize: 12, fontWeight: 650, color: 'var(--text-soft)' }}>
-              {activeEntry?.label ?? state.title ?? '学习通官方页面'}
-            </div>
-            <div style={{ marginTop: 5, fontSize: 10.5 }}>
-              {state.state === 'loading' ? '正在加载官方页面…' : '页面视图正在同步位置'}
-            </div>
-          </div>
-        </div>
-      ) : (
-        <div className="portal-landing">
-          <div className="portal-intro">
-            <div className="portal-intro-icon">
-              <ShieldCheck />
-            </div>
-            <div>
-              <h3>使用你的学习通账号手动登录</h3>
-              <p>
-                点击任一官方入口后，页面将在独立的持久化会话中打开。账号、密码与 Cookie
-                不会写入应用日志， 也不会进入本地 SQLite
-                数据库。若页面无法加载，可随时改用系统浏览器。
-              </p>
             </div>
           </div>
 
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'baseline',
-              justifyContent: 'space-between',
-              marginBottom: 10
-            }}
-          >
-            <h3 style={{ margin: 0, fontSize: 13.5 }}>官方入口</h3>
-            <span style={{ color: 'var(--text-faint)', fontSize: 10.5 }}>
-              仅允许 chaoxing.com 与 xuexitong.com
-            </span>
-          </div>
-          <div className="portal-entry-grid">
+          <div className="studio-portal-quick-entries">
             {entries
               .filter((entry) => entry.enabled)
               .map((entry) => (
                 <button
-                  type="button"
-                  className="portal-entry"
                   key={entry.id}
+                  type="button"
+                  className={
+                    state.entryId === entry.id ? 'studio-action-pill primary' : 'studio-action-pill'
+                  }
                   onClick={() => void openEntry(entry)}
                   disabled={busy}
                 >
-                  <span className="portal-entry-icon">
-                    <Globe2 />
-                  </span>
-                  <span style={{ minWidth: 0 }}>
-                    <span className="portal-entry-name" style={{ display: 'block' }}>
-                      {entry.label}
-                    </span>
-                    <span className="portal-entry-desc" style={{ display: 'block' }}>
-                      {entry.description}
-                    </span>
-                  </span>
-                  <ExternalLink
-                    size={13}
-                    style={{ marginLeft: 'auto', color: 'var(--text-faint)' }}
-                  />
+                  <Globe2 size={12} /> {entry.label}
                 </button>
               ))}
           </div>
 
-          <div className="security-card">
-            <div className="security-title">
-              <ShieldCheck /> 网页隔离安全状态
+          {state.navigationLog.length > 0 ? (
+            <div className="studio-portal-log">
+              <div className="studio-portal-log-head">
+                <span>最近跳转（{state.navigationLog.length}）</span>
+                <button
+                  type="button"
+                  className="text-link"
+                  onClick={() => {
+                    void api.portal
+                      .clearNavigationLog()
+                      .then(() => api.portal.state())
+                      .then(setState)
+                      .catch((error: unknown) => notify('error', errorMessage(error)))
+                  }}
+                >
+                  清空记录
+                </button>
+              </div>
+              {state.navigationLog.slice(0, 6).map((item) => (
+                <div className={`portal-audit-row ${item.allowed ? '' : 'blocked'}`} key={item.id}>
+                  <span className="portal-audit-action">
+                    {NAV_ACTION_LABEL[item.action] ?? item.action}
+                  </span>
+                  <span className="portal-audit-url" title={item.displayUrl}>
+                    {item.displayUrl}
+                  </span>
+                  <span className="portal-audit-state">
+                    {item.allowed ? '允许' : `拦截：${item.reason ?? '未授权'}`}
+                  </span>
+                </div>
+              ))}
             </div>
-            <div className="security-grid">
-              <div className="security-item">
-                <strong>sandbox</strong>
-                {security ? String(security.sandbox) : '检查中'}
-              </div>
-              <div className="security-item">
-                <strong>contextIsolation</strong>
-                {security ? String(security.contextIsolation) : '检查中'}
-              </div>
-              <div className="security-item">
-                <strong>nodeIntegration</strong>
-                {security ? String(security.nodeIntegration) : '检查中'}
-              </div>
-              <div className="security-item">
-                <strong>preload</strong>
-                {security ? (security.hasPreload ? '存在（需复核）' : '未注入') : '检查中'}
-              </div>
-            </div>
-            <p
-              style={{
-                margin: '9px 0 0',
-                color: 'var(--text-faint)',
-                fontSize: 9.5,
-                lineHeight: 1.6
-              }}
-            >
-              会话分区：{security?.partition ?? 'persist:studynext-portal'}
-              。登录由官方页面处理，本应用只展示页面本身； 不读取账号密码，不调用学习通私有接口。
-            </p>
+          ) : null}
+        </section>
+      ) : null}
+
+      <div className="studio-portal-stage" ref={stageRef}>
+        <div className="portal-placeholder">
+          <Globe2 size={24} />
+          <div className="portal-placeholder-title">
+            {activeEntry?.label ?? state.title ?? '学习通官方页面'}
+          </div>
+          <div className="portal-placeholder-sub">
+            {isLoading ? '正在加载学习通官方页面…' : '页面视图准备就绪'}
           </div>
         </div>
-      )}
+      </div>
     </div>
   )
-}
-
-function formatBytes(value: number): string {
-  if (!Number.isFinite(value) || value <= 0) return '0 B'
-  if (value < 1024) return `${value} B`
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`
-  if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`
-  return `${(value / (1024 * 1024 * 1024)).toFixed(2)} GB`
 }

@@ -1,0 +1,766 @@
+/* Checkpoint 4E-C3 — application chrome, Dashboard, Settings and Modal polish.
+   Scoped to the shell / page roots so legacy page rules and business state stay intact. */
+
+.c3-shell {
+  --c3-rail: color-mix(in srgb, var(--ds-surface) 48%, var(--ds-bg));
+  --c3-panel: var(--ds-surface);
+  --c3-panel-head: color-mix(in srgb, var(--ds-surface) 70%, var(--ds-bg));
+  --c3-line: var(--ds-border-subtle);
+  background: var(--ds-bg);
+  color: var(--ds-text);
+}
+
+/* Title bar ---------------------------------------------------------------- */
+.c3-shell .titlebar {
+  background: var(--ds-surface);
+  border-bottom: 1px solid var(--ds-border-subtle);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--ds-text) 3%, transparent);
+}
+
+.c3-shell .titlebar-brand {
+  gap: 8px;
+  font-weight: 600;
+  letter-spacing: -0.012em;
+}
+
+.c3-shell .brand-mark {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: var(--ds-accent);
+  color: #fff;
+  box-shadow: none;
+}
+
+.c3-shell .titlebar-status {
+  gap: 6px;
+  color: var(--ds-text-faint);
+  font-size: 11px;
+}
+
+.c3-shell .titlebar-status .dot {
+  width: 5px;
+  height: 5px;
+}
+
+.c3-shell .titlebar-back {
+  border-radius: 5px;
+}
+
+.c3-shell .window-control {
+  transition:
+    background-color var(--ds-duration-fast) var(--ds-ease-standard),
+    color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+/* Sidebar ------------------------------------------------------------------ */
+.c3-shell .sidebar {
+  width: var(--sidebar-width);
+  min-width: var(--sidebar-width);
+  padding: 12px 9px 10px;
+  gap: 0;
+  background: var(--c3-rail);
+  border-right: 1px solid var(--c3-line);
+}
+
+.c3-shell .sidebar-search-trigger {
+  margin: 0 4px 12px;
+  height: 32px;
+  padding: 0 9px;
+  border-color: var(--c3-line);
+  border-radius: 6px;
+  background: var(--ds-surface);
+  color: var(--ds-text-faint);
+  box-shadow: var(--ds-shadow-card);
+  font-size: 11px;
+  transition:
+    border-color var(--ds-duration-fast) var(--ds-ease-standard),
+    color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.c3-shell .sidebar-search-trigger:hover {
+  border-color: var(--ds-border-strong);
+  background: var(--ds-surface);
+  color: var(--ds-text);
+}
+
+.c3-shell .nav-list {
+  gap: 9px;
+}
+
+.c3-shell .nav-group {
+  gap: 1px;
+}
+
+.c3-shell .nav-group .sidebar-label {
+  padding: 0 8px 6px;
+  color: var(--ds-text-faint);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+}
+
+.c3-shell .nav-group + .nav-group {
+  margin-top: 0;
+}
+
+.c3-shell .nav-item {
+  height: 34px;
+  padding: 0 9px;
+  gap: 9px;
+  border-radius: 6px;
+  color: var(--ds-text-muted);
+  font-size: 12.5px;
+  font-weight: 500;
+  transition:
+    background-color var(--ds-duration-fast) var(--ds-ease-standard),
+    color var(--ds-duration-fast) var(--ds-ease-standard),
+    box-shadow var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.c3-shell .nav-item svg {
+  width: 16px;
+  height: 16px;
+  color: var(--ds-text-faint);
+  transition: color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.c3-shell .nav-item:hover {
+  background: var(--ds-surface-hover);
+  color: var(--ds-text);
+}
+
+.c3-shell .nav-item:hover svg {
+  color: var(--ds-text-muted);
+}
+
+.c3-shell .nav-item.active {
+  background: color-mix(in srgb, var(--ds-accent) 8%, var(--ds-surface));
+  color: var(--ds-accent-strong);
+  font-weight: 600;
+}
+
+.c3-shell .nav-item.active svg {
+  color: var(--ds-accent);
+}
+
+.c3-shell .nav-item.active::before {
+  display: none;
+}
+
+.c3-shell .nav-item:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.c3-shell .nav-item.active:focus-visible {
+  box-shadow: var(--ds-focus-ring);
+}
+
+.c3-shell .nav-badge {
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border: 1px solid color-mix(in srgb, var(--ds-accent) 16%, transparent);
+  border-radius: 4px;
+  background: var(--ds-accent-soft);
+  color: var(--ds-accent-strong);
+  font-size: 10.5px;
+}
+
+.c3-shell .sidebar-focus {
+  margin-top: auto;
+  margin-bottom: 8px;
+  padding: 12px;
+  border: 1px solid var(--c3-line);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-surface);
+  background-image: none;
+  box-shadow: var(--ds-shadow-card);
+  color: var(--ds-text);
+}
+
+.c3-shell .sidebar-focus-title {
+  gap: 6px;
+  color: var(--ds-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.c3-shell .sidebar-focus-title svg {
+  color: var(--ds-accent);
+}
+
+.c3-shell .sidebar-focus p {
+  margin-top: 8px;
+  color: var(--ds-text-muted);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+
+.c3-shell .sidebar-focus .text-link {
+  margin-top: 8px;
+  font-size: 11.5px;
+}
+
+.c3-shell .sidebar-account-wrap {
+  margin-top: 0;
+}
+
+.c3-shell .sidebar-account {
+  padding: 10px;
+  border: 1px solid var(--c3-line);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-surface);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.c3-shell .sidebar-avatar {
+  width: 32px;
+  height: 32px;
+}
+
+.c3-shell .sidebar-account-copy strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.c3-shell .sidebar-account-copy span {
+  font-size: 10.5px;
+}
+
+.c3-shell .sidebar-account-action {
+  height: 28px;
+  border-color: var(--c3-line);
+  border-radius: 5px;
+  color: var(--ds-text-muted);
+  font-size: 10.5px;
+  transition:
+    background-color var(--ds-duration-fast) var(--ds-ease-standard),
+    color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.c3-shell .sidebar-account-action:hover {
+  background: var(--ds-surface-hover);
+  color: var(--ds-text);
+}
+
+.c3-shell .sidebar-footer {
+  padding: 10px 8px 0;
+  border-top: 1px solid var(--c3-line);
+  color: var(--ds-text-faint);
+  font-size: 10.5px;
+}
+
+/* Page frame and motion ---------------------------------------------------- */
+.c3-shell .main-scroll {
+  background: var(--ds-bg);
+}
+
+.c3-shell .page {
+  animation: c3-page-in var(--ds-motion-enter) var(--ds-ease-enter) both;
+}
+
+@keyframes c3-page-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* Dashboard ---------------------------------------------------------------- */
+.c3-shell .ds-dashboard {
+  max-width: 1320px;
+}
+
+.c3-shell .ds-dashboard .ds-page-header {
+  margin-bottom: 16px;
+}
+
+.c3-shell .ds-dashboard .ds-page-title {
+  font-size: 28px;
+  letter-spacing: -0.03em;
+}
+
+.c3-shell .ds-dashboard .ds-page-subtitle {
+  font-size: 12px;
+  color: var(--ds-text-muted);
+}
+
+.c3-shell .ds-dashboard .overview-bar {
+  min-height: 34px;
+  margin-bottom: 16px;
+  padding: 8px 2px;
+  border: 0;
+  border-top: 1px solid var(--c3-line);
+  border-bottom: 1px solid var(--c3-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ds-text-muted);
+  font-size: 11.5px;
+}
+
+.c3-shell .ds-dashboard .overview-item {
+  color: var(--ds-text-muted);
+}
+
+.c3-shell .ds-dashboard .overview-item strong {
+  color: var(--ds-text);
+}
+
+.c3-shell .ds-dashboard .panel {
+  border-color: var(--c3-line);
+  border-radius: var(--ds-radius-lg);
+  background: var(--c3-panel);
+  box-shadow: var(--ds-elevation-1);
+}
+
+.c3-shell .ds-dashboard .panel-head {
+  padding: 12px 16px;
+  border-bottom-color: var(--c3-line);
+  background: var(--c3-panel-head);
+}
+
+.c3-shell .ds-dashboard .panel-head h2 {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.008em;
+}
+
+.c3-shell .ds-dashboard .panel-head p {
+  margin-top: 3px;
+  color: var(--ds-text-faint);
+  font-size: 11px;
+}
+
+.c3-shell .ds-dashboard .panel-head .text-link {
+  color: var(--ds-text-muted);
+  font-size: 11px;
+}
+
+.c3-shell .ds-dashboard .panel-head .text-link:hover {
+  color: var(--ds-accent-strong);
+}
+
+.c3-shell .ds-dashboard .agenda-row {
+  min-height: 50px;
+  padding: 10px 16px;
+}
+
+.c3-shell .ds-dashboard .agenda-title {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.c3-shell .ds-dashboard .agenda-meta {
+  color: var(--ds-text-faint);
+  font-size: 11px;
+}
+
+.c3-shell .ds-dashboard .agenda-due {
+  font-size: 10.5px;
+  font-weight: 500;
+}
+
+.c3-shell .ds-dashboard .task-check {
+  color: var(--ds-text-faint);
+}
+
+.c3-shell .ds-dashboard .dashboard-week {
+  border-color: var(--c3-line);
+  border-radius: var(--ds-radius-lg);
+  background: var(--c3-panel);
+  box-shadow: var(--ds-elevation-1);
+}
+
+.c3-shell .ds-dashboard .week-table {
+  border-top-color: var(--c3-line);
+}
+
+.c3-shell .ds-dashboard .week-table-day,
+.c3-shell .ds-dashboard .week-table-time {
+  border-right-color: var(--c3-line);
+  border-bottom-color: var(--c3-line);
+  background: var(--c3-panel-head);
+}
+
+.c3-shell .ds-dashboard .week-table-day strong,
+.c3-shell .ds-dashboard .week-table-time strong {
+  font-weight: 600;
+}
+
+.c3-shell .ds-dashboard .week-table-day span,
+.c3-shell .ds-dashboard .week-table-time span {
+  color: var(--ds-text-faint);
+}
+
+.c3-shell .ds-dashboard .week-table-day.today strong {
+  color: var(--ds-accent);
+}
+
+.c3-shell .ds-dashboard .week-table-cell {
+  border-right-color: var(--c3-line);
+  border-bottom-color: var(--c3-line);
+  min-height: 66px;
+}
+
+.c3-shell .ds-dashboard .week-table-cell.today {
+  background: color-mix(in srgb, var(--ds-accent) 3%, var(--ds-surface));
+}
+
+.c3-shell .ds-dashboard .week-session {
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--course-color, var(--ds-accent)) 5%, var(--ds-surface));
+}
+
+.c3-shell .ds-dashboard .week-session:hover {
+  background: color-mix(in srgb, var(--course-color, var(--ds-accent)) 9%, var(--ds-surface));
+}
+
+.c3-shell .ds-dashboard .dashboard-lower {
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.c3-shell .ds-dashboard .dashboard-lower > .panel {
+  overflow: hidden;
+}
+
+.c3-shell .ds-dashboard .dashboard-lower .panel-head {
+  padding: 11px 14px;
+}
+
+.c3-shell .ds-dashboard .dashboard-lower .panel-head h2 {
+  font-size: 12.5px;
+}
+
+.c3-shell .ds-dashboard .review-row,
+.c3-shell .ds-dashboard .deadline-row,
+.c3-shell .ds-dashboard .notice-item {
+  padding-left: 14px;
+  padding-right: 14px;
+}
+
+.c3-shell .ds-dashboard .dashboard-footnote {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top-color: var(--c3-line);
+}
+
+/* Settings ----------------------------------------------------------------- */
+.c3-shell .ds-settings-page {
+  max-width: 1240px;
+}
+
+.c3-shell .ds-settings-page .settings-layout {
+  gap: 26px;
+}
+
+.c3-shell .ds-settings-page .settings-nav {
+  top: 18px;
+  padding: 2px 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.c3-shell .ds-settings-page .settings-nav-group {
+  gap: 1px;
+}
+
+.c3-shell .ds-settings-page .settings-nav-label {
+  padding: 14px 8px 5px;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+}
+
+.c3-shell .ds-settings-page .settings-nav-group:first-child .settings-nav-label {
+  padding-top: 4px;
+}
+
+.c3-shell .ds-settings-page .settings-nav-item {
+  height: 32px;
+  padding: 0 8px;
+  border-radius: 5px;
+  color: var(--ds-text-muted);
+  font-size: 12px;
+}
+
+.c3-shell .ds-settings-page .settings-nav-item.active {
+  background: var(--ds-surface);
+  box-shadow:
+    inset 2px 0 0 var(--ds-accent),
+    0 1px 2px rgba(20, 24, 26, 0.04);
+  color: var(--ds-text);
+}
+
+.c3-shell .ds-settings-page .settings-nav-item.active svg {
+  color: var(--ds-accent);
+}
+
+.c3-shell .ds-settings-page .settings-content {
+  border-color: var(--c3-line);
+  border-radius: var(--ds-radius-lg);
+  background: var(--c3-panel);
+  box-shadow: var(--ds-elevation-1);
+}
+
+.c3-shell .ds-settings-page .settings-section {
+  padding: 24px 28px 26px;
+  border-bottom-color: var(--c3-line);
+}
+
+.c3-shell .ds-settings-page .settings-section-head {
+  margin-bottom: 16px;
+}
+
+.c3-shell .ds-settings-page .settings-section-head h2 {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+
+.c3-shell .ds-settings-page .settings-section-head p {
+  max-width: 68ch;
+  margin-top: 5px;
+  color: var(--ds-text-muted);
+  font-size: 12px;
+}
+
+.c3-shell .ds-settings-page .settings-section .setting-row {
+  min-height: 58px;
+  padding: 13px 0;
+  border-top-color: var(--c3-line);
+}
+
+.c3-shell .ds-settings-page .setting-label {
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.c3-shell .ds-settings-page .setting-desc {
+  margin-top: 3px;
+  color: var(--ds-text-faint);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.c3-shell .ds-settings-page .setting-copy {
+  max-width: 66%;
+}
+
+.c3-shell .ds-settings-page .setting-row-stack {
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.c3-shell .ds-settings-page .setting-row-stack .setting-copy {
+  max-width: none;
+}
+
+.c3-shell .ds-settings-page .settings-inline-note {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--c3-line);
+  border-radius: 6px;
+  background: var(--ds-surface-muted);
+  color: var(--ds-text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 720px) {
+  .c3-shell .ds-settings-page .setting-row-stack {
+    flex-direction: column;
+  }
+}
+
+.c3-shell .ds-settings-page .theme-options {
+  padding: 3px;
+  border-color: var(--c3-line);
+  border-radius: 6px;
+  background: var(--ds-surface-muted);
+}
+
+.c3-shell .ds-settings-page .theme-option {
+  min-width: 78px;
+  height: 30px;
+  border-radius: 4px;
+  font-size: 11.5px;
+}
+
+.c3-shell .ds-settings-page .theme-option.active {
+  background: var(--ds-surface);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.c3-shell .ds-settings-page .settings-section .setting-row input[type='text'],
+.c3-shell .ds-settings-page .settings-section .setting-row input[type='password'],
+.c3-shell .ds-settings-page .settings-section .setting-row input[type='number'],
+.c3-shell .ds-settings-page .settings-section .setting-row select,
+.c3-shell .ds-settings-page .settings-form input,
+.c3-shell .ds-settings-page .settings-form select {
+  height: 32px;
+  border-color: var(--c3-line);
+  border-radius: 5px;
+  background: var(--ds-surface);
+  font-size: 12px;
+}
+
+.c3-shell .ds-settings-page .settings-section .setting-row input:focus-visible,
+.c3-shell .ds-settings-page .settings-section .setting-row select:focus-visible,
+.c3-shell .ds-settings-page .settings-form input:focus-visible,
+.c3-shell .ds-settings-page .settings-form select:focus-visible {
+  outline: 0;
+  border-color: var(--ds-accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ds-accent) 12%, transparent);
+}
+
+.c3-shell .ds-settings-page .settings-section .info-box {
+  border-color: var(--c3-line);
+  background: var(--ds-surface-muted);
+}
+
+.c3-shell .ds-settings-page .settings-section .chaoxing-card,
+.c3-shell .ds-settings-page .settings-section .import-zone,
+.c3-shell .ds-settings-page .settings-section .security-card {
+  border-color: var(--c3-line);
+  background: var(--ds-surface-muted);
+}
+
+.c3-shell .ds-settings-page .settings-section .setting-row-danger {
+  border-color: color-mix(in srgb, var(--ds-danger) 22%, var(--c3-line));
+  background: color-mix(in srgb, var(--ds-danger-soft) 42%, var(--ds-surface));
+}
+
+/* Modal -------------------------------------------------------------------- */
+.c3-modal-backdrop {
+  background: var(--ds-overlay);
+  backdrop-filter: blur(3px);
+  animation: c3-overlay-in 140ms var(--ds-ease-standard) both;
+}
+
+.c3-modal {
+  width: min(640px, 100%);
+  max-height: min(calc(100vh - var(--titlebar-height) - 56px), 860px);
+  border: 1px solid var(--ds-border);
+  border-radius: 10px;
+  background: var(--ds-surface);
+  box-shadow: var(--ds-elevation-2);
+  animation: c3-dialog-in var(--ds-motion-enter) var(--ds-ease-enter) both;
+}
+
+.c3-modal.wide {
+  width: min(780px, 100%);
+}
+
+.c3-modal .modal-header {
+  padding: 18px 20px 14px;
+  border-bottom-color: var(--c3-line);
+}
+
+.c3-modal .modal-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.018em;
+}
+
+.c3-modal .modal-subtitle {
+  margin-top: 4px;
+  color: var(--ds-text-faint);
+  font-size: 11.5px;
+}
+
+.c3-modal .modal-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 5px;
+  color: var(--ds-text-faint);
+}
+
+.c3-modal .modal-close:hover {
+  background: var(--ds-surface-hover);
+  color: var(--ds-text);
+}
+
+.c3-modal .modal-close:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.c3-modal .modal-body {
+  padding: 18px 20px;
+}
+
+.c3-modal .modal-footer {
+  padding: 12px 20px;
+  border-top-color: var(--c3-line);
+  background: var(--ds-surface);
+}
+
+@keyframes c3-overlay-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes c3-dialog-in {
+  from {
+    opacity: 0;
+    transform: translateY(7px) scale(0.992);
+  }
+}
+
+@media (max-width: 1024px) {
+  .c3-shell .ds-settings-page .settings-layout {
+    gap: 20px;
+  }
+}
+
+@media (max-width: 901px) {
+  .c3-shell .ds-settings-page .settings-nav {
+    top: 0;
+    padding: 6px;
+    border: 1px solid var(--c3-line);
+    border-radius: 6px;
+    background: var(--ds-surface);
+    box-shadow: var(--ds-shadow-card);
+  }
+
+  .c3-shell .ds-settings-page .settings-nav-label {
+    display: none;
+  }
+
+  .c3-shell .ds-settings-page .settings-nav-item {
+    height: 32px;
+    padding: 0 6px;
+    gap: 6px;
+    font-size: 11.5px;
+  }
+
+  .c3-shell .ds-settings-page .settings-nav-item.active {
+    background: var(--ds-accent-soft);
+    box-shadow: inset 0 -2px 0 var(--ds-accent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .c3-shell .page,
+  .c3-modal-backdrop,
+  .c3-modal,
+  .c3-shell .nav-item,
+  .c3-shell .sidebar-search-trigger,
+  .c3-shell .sidebar-account-action {
+    animation: none !important;
+    transition-duration: 0.01ms !important;
+  }
+}

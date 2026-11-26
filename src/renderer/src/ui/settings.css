@@ -1,0 +1,428 @@
+/* Checkpoint 4E-C1 — Settings workspace.
+   Scoped to the Settings page; preserves all existing section markup and business state. */
+
+.ds-settings-page {
+  --settings-nav-width: 184px;
+}
+
+.ds-settings-page .settings-layout {
+  display: grid;
+  grid-template-columns: var(--settings-nav-width) minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+/* Navigation */
+.ds-settings-page .settings-nav {
+  position: sticky;
+  top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-surface);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.ds-settings-page .settings-nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.ds-settings-page .settings-nav-label {
+  padding: 0 9px 4px;
+  color: var(--ds-text-faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.ds-settings-page .settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: var(--ds-radius-md);
+  background: transparent;
+  color: var(--ds-text-muted);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-text-sm);
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--ds-duration-fast) var(--ds-ease-standard),
+    color var(--ds-duration-fast) var(--ds-ease-standard),
+    box-shadow var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-settings-page .settings-nav-item svg {
+  flex: 0 0 auto;
+  color: var(--ds-text-faint);
+  transition: color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-settings-page .settings-nav-item span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ds-settings-page .settings-nav-item:hover {
+  background: var(--ds-surface-hover);
+  color: var(--ds-text);
+}
+
+.ds-settings-page .settings-nav-item.active {
+  background: var(--ds-accent-soft);
+  box-shadow: inset 2px 0 0 var(--ds-accent);
+  color: var(--ds-accent-strong);
+  font-weight: 600;
+}
+
+.ds-settings-page .settings-nav-item.active svg {
+  color: var(--ds-accent);
+}
+
+.ds-settings-page .settings-nav-item:focus-visible {
+  outline: none;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.ds-settings-page .settings-nav-item.active:focus-visible {
+  box-shadow:
+    inset 2px 0 0 var(--ds-accent),
+    var(--ds-focus-ring);
+}
+
+/* Content surface */
+.ds-settings-page .settings-content {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-surface);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.ds-settings-page .settings-section {
+  margin: 0;
+  padding: 22px 24px 24px;
+  border: 0;
+  border-bottom: 1px solid var(--ds-border);
+  border-radius: 0;
+  background: transparent;
+  scroll-margin-top: 16px;
+}
+
+.ds-settings-page .settings-section:last-child {
+  border-bottom: 0;
+}
+
+.ds-settings-page .settings-section-head {
+  margin: 0 0 14px;
+}
+
+.ds-settings-page .settings-section-head h2 {
+  margin: 0;
+  color: var(--ds-text-strong);
+  font-family: var(--ds-font-ui);
+  font-size: var(--ds-text-lg);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.35;
+}
+
+.ds-settings-page .settings-section-head p {
+  max-width: 66ch;
+  margin: 4px 0 0;
+  color: var(--ds-text-muted);
+  font-size: var(--ds-text-sm);
+  line-height: 1.55;
+}
+
+.ds-settings-page .settings-section > .settings-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+/* Rows */
+.ds-settings-page .settings-section .setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  min-height: 54px;
+  margin: 0;
+  padding: 12px 0;
+  border-top: 1px solid var(--ds-border);
+  background: transparent;
+}
+
+.ds-settings-page .settings-section .setting-row:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.ds-settings-page .settings-section .setting-row:last-child {
+  padding-bottom: 0;
+}
+
+.ds-settings-page .setting-copy {
+  min-width: 0;
+  max-width: 64%;
+}
+
+.ds-settings-page .setting-label {
+  color: var(--ds-text-strong);
+  font-size: var(--ds-text-base);
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.ds-settings-page .setting-desc {
+  margin-top: 2px;
+  color: var(--ds-text-muted);
+  font-size: var(--ds-text-xs);
+  line-height: 1.55;
+}
+
+.ds-settings-page .setting-row > .btn,
+.ds-settings-page .setting-row > .select,
+.ds-settings-page .setting-row > .theme-options {
+  flex: 0 0 auto;
+}
+
+/* Section groups and compact data blocks */
+.ds-settings-page .info-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.ds-settings-page .info-box {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-muted);
+}
+
+.ds-settings-page .info-box > span {
+  display: block;
+  margin-bottom: 3px;
+  color: var(--ds-text-faint);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.ds-settings-page .info-box > strong {
+  display: block;
+  overflow-wrap: anywhere;
+  color: var(--ds-text);
+  font-size: var(--ds-text-sm);
+  font-weight: 500;
+  line-height: 1.5;
+}
+
+.ds-settings-page .settings-section .chaoxing-card,
+.ds-settings-page .settings-section .import-zone,
+.ds-settings-page .settings-section .security-card {
+  border-color: var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-muted);
+}
+
+.ds-settings-page .settings-section .security-card {
+  margin-top: 8px;
+}
+
+.ds-settings-page .settings-section .chaoxing-grid {
+  gap: 8px;
+}
+
+.ds-settings-page .settings-section .chaoxing-item,
+.ds-settings-page .settings-section .security-item {
+  min-width: 0;
+}
+
+/* Theme control */
+.ds-settings-page .theme-options {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-muted);
+}
+
+.ds-settings-page .theme-option {
+  min-width: 74px;
+  height: 28px;
+  border: 0;
+  border-radius: var(--ds-radius-sm);
+  background: transparent;
+  color: var(--ds-text-muted);
+  font-size: 11.5px;
+}
+
+.ds-settings-page .theme-option.active {
+  background: var(--ds-surface);
+  box-shadow: var(--ds-shadow-card);
+  color: var(--ds-text-strong);
+}
+
+/* Danger zone stays inside the existing data section, without changing handlers. */
+.ds-settings-page .settings-danger-zone {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--ds-border);
+}
+
+.ds-settings-page .settings-subhead {
+  margin: 0 0 8px;
+  color: var(--ds-danger);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.ds-settings-page .settings-section .setting-row-danger {
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--ds-danger) 28%, var(--ds-border));
+  border-radius: var(--ds-radius-md);
+  background: color-mix(in srgb, var(--ds-danger-soft) 52%, var(--ds-surface));
+}
+
+.ds-settings-page .settings-section .setting-row-danger .setting-desc {
+  max-width: 58ch;
+}
+
+/* Responsive */
+@media (max-width: 1100px) {
+  .ds-settings-page {
+    --settings-nav-width: 168px;
+  }
+
+  .ds-settings-page .settings-layout {
+    gap: 16px;
+  }
+
+  .ds-settings-page .settings-section {
+    padding: 20px 20px 22px;
+  }
+}
+
+/* 150% Electron zoom can yield a 900.27px CSS viewport; keep the narrow layout active. */
+@media (max-width: 901px) {
+  .ds-settings-page .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .ds-settings-page .settings-nav {
+    position: sticky;
+    top: 0;
+    z-index: var(--ds-z-sticky);
+    flex-direction: row;
+    gap: 2px;
+    width: 100%;
+    overflow-x: auto;
+    padding: 6px;
+    border-radius: var(--ds-radius-md);
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+  }
+
+  .ds-settings-page .settings-nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ds-settings-page .settings-nav-group {
+    display: contents;
+  }
+
+  .ds-settings-page .settings-nav-label {
+    display: none;
+  }
+
+  .ds-settings-page .settings-nav .settings-nav-item {
+    flex: 0 0 auto;
+    width: auto;
+    height: 34px;
+    padding: 0 10px;
+    white-space: nowrap;
+  }
+
+  .ds-settings-page .settings-nav-item.active {
+    box-shadow: inset 0 -2px 0 var(--ds-accent);
+  }
+
+  .ds-settings-page .settings-nav-item.active:focus-visible {
+    box-shadow:
+      inset 0 -2px 0 var(--ds-accent),
+      var(--ds-focus-ring);
+  }
+
+  .ds-settings-page .settings-content {
+    border-radius: var(--ds-radius-md);
+  }
+
+  .ds-settings-page .settings-section {
+    padding: 18px 16px 20px;
+    scroll-margin-top: 52px;
+  }
+
+  .ds-settings-page .setting-copy {
+    max-width: 100%;
+  }
+
+  .ds-settings-page .settings-section .setting-row {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .ds-settings-page .setting-row > .btn,
+  .ds-settings-page .setting-row > .select,
+  .ds-settings-page .setting-row > .theme-options {
+    align-self: flex-start;
+  }
+
+  .ds-settings-page .info-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
+  .ds-settings-page .settings-section {
+    padding: 16px 14px 18px;
+  }
+
+  .ds-settings-page .theme-options {
+    width: 100%;
+  }
+
+  .ds-settings-page .theme-option {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+}

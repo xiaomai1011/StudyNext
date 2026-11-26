@@ -29,30 +29,28 @@ test('最小窗口尺寸下主要页面无横向溢出', async () => {
       env
     })
     const page: Page = await app.firstWindow()
-    await page.waitForSelector('.app-shell')
+    await page.waitForSelector('.studio-shell')
     await app.evaluate(({ BrowserWindow }) => {
       BrowserWindow.getAllWindows()[0]?.setSize(1080, 700)
     })
-    await page.waitForTimeout(450)
+    await page.waitForTimeout(400)
 
-    for (const [label, title] of [
-      ['总览', '学习总览'],
-      ['学习中心', '学习中心'],
-      ['任务中心', '任务与 DDL'],
-      ['课程中心', '我的课程'],
-      ['题目助手', '题目助手'],
-      ['日历', '日历与安排'],
-      ['官方页面', '官方页面'],
-      ['设置', '偏好与数据']
-    ] as const) {
-      await page.locator('.nav-item', { hasText: label }).click()
-      await expect(page.locator('.page-title')).toHaveText(title)
-      await page.waitForTimeout(350)
+    const checks: Array<{ name: string; open: () => Promise<void> }> = [
+      { name: '今天', open: () => page.locator('.studio-pill-item', { hasText: '今天' }).click() },
+      { name: '课程', open: () => page.locator('.studio-pill-item', { hasText: '课程' }).click() },
+      { name: '作业', open: () => page.locator('.studio-pill-item', { hasText: '作业' }).click() },
+      { name: '通知', open: () => page.locator('button[aria-label="通知收件箱"]').click() },
+      { name: '设置', open: () => page.locator('button[aria-label="设置"]').click() }
+    ]
+
+    for (const item of checks) {
+      await item.open()
+      await page.waitForTimeout(300)
       const overflow = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         innerWidth: window.innerWidth
       }))
-      expect(overflow.scrollWidth, `页面 ${label} 不应横向溢出`).toBeLessThanOrEqual(
+      expect(overflow.scrollWidth, `页面 ${item.name} 不应横向溢出`).toBeLessThanOrEqual(
         overflow.innerWidth + 1
       )
     }

@@ -1,0 +1,573 @@
+/* 4E-A pilots: Dashboard and Settings presentation only.
+   No business selectors, state logic, download/Portal rules or other pages are
+   touched here. Existing page classes stay in place for compatibility. */
+
+/* Dashboard --------------------------------------------------------------- */
+
+.ds-dashboard .ds-page-header {
+  margin-bottom: var(--ds-space-5);
+}
+
+.ds-dashboard .overview-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px 18px;
+  min-height: 40px;
+  margin-bottom: var(--ds-space-4);
+  padding: 9px 14px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-lg);
+  background: var(--ds-surface);
+  box-shadow: var(--ds-shadow-card);
+  color: var(--ds-text-muted);
+  font-size: var(--ds-text-sm);
+}
+
+.ds-dashboard .overview-item {
+  gap: 6px;
+  min-height: 18px;
+}
+
+.ds-dashboard .overview-item strong {
+  color: var(--ds-text);
+  font-weight: var(--ds-weight-semibold);
+}
+
+.ds-dashboard .overview-item.danger {
+  color: var(--ds-danger);
+}
+
+.ds-dashboard .overview-item.muted {
+  color: var(--ds-text-faint);
+}
+
+.ds-dashboard .overview-spacer {
+  flex: 1 1 24px;
+}
+
+.ds-dashboard .status-dot {
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 9%, transparent);
+}
+
+.ds-dashboard .panel {
+  border-radius: var(--ds-radius-lg);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.ds-dashboard .panel-head {
+  align-items: center;
+  gap: var(--ds-space-4);
+  padding: 13px 16px;
+}
+
+.ds-dashboard .panel-head h2 {
+  margin: 0;
+  font-size: var(--ds-text-md);
+  font-weight: var(--ds-weight-semibold);
+  letter-spacing: -0.012em;
+  line-height: var(--ds-leading-tight);
+}
+
+.ds-dashboard .panel-head p {
+  margin: 3px 0 0;
+  color: var(--ds-text-faint);
+  font-size: var(--ds-text-xs);
+  line-height: var(--ds-leading-normal);
+}
+
+.ds-dashboard .panel-head .text-link {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 4px;
+  white-space: nowrap;
+  padding: 4px 2px;
+  border-radius: var(--ds-radius-sm);
+  color: var(--ds-accent);
+  font-size: var(--ds-text-xs);
+  font-weight: var(--ds-weight-medium);
+  transition: color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-dashboard .panel-head .text-link:hover {
+  color: var(--ds-accent-strong);
+}
+
+.ds-dashboard .panel-head .text-link:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.ds-dashboard .agenda-list {
+  column-gap: var(--ds-space-6);
+}
+
+.ds-dashboard .agenda-row {
+  grid-template-columns: 18px minmax(0, 1fr) auto auto;
+  gap: 10px;
+  min-height: 48px;
+  padding: 9px 16px;
+  border-bottom-color: color-mix(in srgb, var(--ds-border) 82%, transparent);
+  transition: background-color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-dashboard .agenda-row:hover {
+  background: var(--ds-surface-hover);
+}
+
+.ds-dashboard .agenda-row:focus-within {
+  background: color-mix(in srgb, var(--ds-accent) 4%, var(--ds-surface));
+}
+
+.ds-dashboard .agenda-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border-radius: var(--ds-radius-sm);
+  text-align: left;
+}
+
+.ds-dashboard .agenda-main:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.ds-dashboard .agenda-title {
+  font-size: 13px;
+  font-weight: var(--ds-weight-medium);
+  line-height: 1.35;
+}
+
+.ds-dashboard .agenda-meta {
+  margin-top: 0;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.ds-dashboard .agenda-due {
+  align-self: center;
+  color: var(--ds-text-muted);
+  font-size: var(--ds-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.ds-dashboard .agenda-due.overdue {
+  color: var(--ds-danger);
+}
+
+.ds-dashboard .task-check {
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  color: var(--ds-text-faint);
+}
+
+.ds-dashboard .task-check:hover {
+  background: var(--ds-surface-hover);
+  color: var(--ds-accent);
+}
+
+.ds-dashboard .empty-state.ds-empty-state {
+  grid-column: 1 / -1;
+  padding: 26px 18px;
+}
+
+.ds-dashboard .dashboard-week {
+  border-radius: var(--ds-radius-lg);
+}
+
+.ds-dashboard .week-table {
+  grid-template-columns: 72px repeat(7, minmax(0, 1fr));
+  border-top-color: var(--ds-border);
+}
+
+.ds-dashboard .week-table-day {
+  padding: 9px 10px;
+  background: var(--ds-surface-muted);
+}
+
+.ds-dashboard .week-table-day strong {
+  font-size: 11.5px;
+  font-weight: var(--ds-weight-semibold);
+}
+
+.ds-dashboard .week-table-day span,
+.ds-dashboard .week-table-time span {
+  font-size: 10px;
+  color: var(--ds-text-muted);
+}
+
+.ds-dashboard .week-table-time {
+  padding: 9px 10px;
+  background: var(--ds-surface-muted);
+}
+
+.ds-dashboard .week-table-time strong {
+  font-size: 10.5px;
+  font-weight: var(--ds-weight-semibold);
+}
+
+.ds-dashboard .week-table-cell {
+  min-height: 64px;
+  padding: 5px;
+}
+
+.ds-dashboard .week-session {
+  min-height: 50px;
+  padding: 7px 8px;
+  border-left: 2px solid var(--course-color, var(--ds-accent));
+  border-radius: var(--ds-radius-sm);
+  background: color-mix(in srgb, var(--course-color, var(--ds-accent)) 7%, var(--ds-surface));
+  transition: background-color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-dashboard .week-session:hover {
+  background: color-mix(in srgb, var(--course-color, var(--ds-accent)) 12%, var(--ds-surface));
+}
+
+.ds-dashboard .week-session:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.ds-dashboard .week-session-name {
+  font-size: 11px;
+  font-weight: var(--ds-weight-medium);
+  line-height: 1.35;
+}
+
+.ds-dashboard .week-session-place {
+  margin-top: 3px;
+  font-size: 9.5px;
+  color: var(--ds-text-muted);
+}
+
+.ds-dashboard .dashboard-lower {
+  align-items: start;
+  gap: var(--ds-space-4);
+  margin-top: var(--ds-space-4);
+}
+
+.ds-dashboard .review-row,
+.ds-dashboard .deadline-row {
+  min-height: 48px;
+  padding: 9px 16px;
+  border-bottom-color: color-mix(in srgb, var(--ds-border) 82%, transparent);
+  transition: background-color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-dashboard .review-row:hover,
+.ds-dashboard .deadline-row:hover {
+  background: var(--ds-surface-hover);
+}
+
+.ds-dashboard .review-row:focus-visible,
+.ds-dashboard .deadline-row:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.ds-dashboard .review-title,
+.ds-dashboard .deadline-title {
+  font-size: 12.5px;
+  font-weight: var(--ds-weight-medium);
+}
+
+.ds-dashboard .review-meta,
+.ds-dashboard .deadline-meta {
+  font-size: 11px;
+  color: var(--ds-text-faint);
+}
+
+.ds-dashboard .notice-item {
+  width: 100%;
+  min-height: 44px;
+  padding: 9px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-dashboard .notice-item:hover {
+  background: var(--ds-surface-hover);
+}
+
+.ds-dashboard .notice-item:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 0 0 2px var(--ds-accent);
+}
+
+.ds-dashboard .notice-main,
+.ds-dashboard .notice-time {
+  display: block;
+}
+
+.ds-dashboard .notice-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  font-weight: var(--ds-weight-medium);
+}
+
+.ds-dashboard .notice-time {
+  font-size: 10.5px;
+  color: var(--ds-text-faint);
+}
+
+.ds-dashboard .dashboard-lower .ds-empty-state.compact {
+  padding: 16px 12px;
+}
+
+.ds-dashboard .dashboard-lower .ds-empty-icon {
+  width: 28px;
+  height: 28px;
+  margin-bottom: 7px;
+}
+
+.ds-dashboard .dashboard-lower .ds-empty-title {
+  font-size: 12.5px;
+}
+
+.ds-dashboard .dashboard-lower .ds-empty-text {
+  margin-top: 3px;
+  font-size: 11px;
+}
+
+.ds-dashboard .dashboard-footnote {
+  margin-top: var(--ds-space-3);
+  color: var(--ds-text-faint);
+  font-size: var(--ds-text-xs);
+}
+
+.ds-dashboard .dashboard-footnote > span {
+  gap: 5px;
+}
+
+/* Settings ---------------------------------------------------------------- */
+
+.ds-settings-page .ds-page-header {
+  margin-bottom: var(--ds-space-5);
+}
+
+.ds-settings-page .settings-layout {
+  grid-template-columns: 168px minmax(0, 1fr);
+  gap: var(--ds-space-4);
+}
+
+.ds-settings-page .settings-nav {
+  top: var(--ds-space-4);
+  padding: 6px;
+  border-radius: var(--ds-radius-lg);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.ds-settings-page .settings-nav button {
+  height: 30px;
+  justify-content: flex-start;
+  padding: 0 9px;
+  border-radius: var(--ds-radius-md);
+  color: var(--ds-text-muted);
+  font-size: var(--ds-text-sm);
+  font-weight: var(--ds-weight-medium);
+  text-align: left;
+  transition:
+    background-color var(--ds-duration-fast) var(--ds-ease-standard),
+    color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-settings-page .settings-nav button:hover {
+  background: var(--ds-surface-hover);
+  color: var(--ds-text);
+}
+
+.ds-settings-page .settings-nav button:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.ds-settings-page .settings-section {
+  margin-bottom: var(--ds-space-4);
+  border-radius: var(--ds-radius-lg);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.ds-settings-page .settings-section-head {
+  padding: 16px 18px 0;
+}
+
+.ds-settings-page .settings-section-head h3 {
+  margin: 0;
+  font-size: var(--ds-text-md);
+  font-weight: var(--ds-weight-semibold);
+  letter-spacing: -0.01em;
+  line-height: var(--ds-leading-tight);
+}
+
+.ds-settings-page .settings-section-head p {
+  margin: 4px 0 0;
+  color: var(--ds-text-faint);
+  font-size: var(--ds-text-sm);
+  line-height: var(--ds-leading-normal);
+}
+
+.ds-settings-page .settings-rows {
+  padding: 8px 18px 16px;
+}
+
+.ds-settings-page .setting-row {
+  gap: var(--ds-space-6);
+  padding: 12px 0;
+  border-top-color: color-mix(in srgb, var(--ds-border) 84%, transparent);
+}
+
+.ds-settings-page .setting-label {
+  color: var(--ds-text);
+  font-size: var(--ds-text-base);
+  font-weight: var(--ds-weight-medium);
+  line-height: var(--ds-leading-normal);
+}
+
+.ds-settings-page .setting-desc {
+  max-width: 640px;
+  margin-top: 3px;
+  color: var(--ds-text-faint);
+  font-size: 11.5px;
+  line-height: var(--ds-leading-relaxed);
+}
+
+.ds-settings-page .theme-options {
+  gap: 4px;
+  padding: 3px;
+  border: 1px solid var(--ds-border);
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-muted);
+}
+
+.ds-settings-page .theme-option {
+  min-height: 28px;
+  border-radius: var(--ds-radius-sm);
+  color: var(--ds-text-muted);
+  font-size: var(--ds-text-xs);
+  font-weight: var(--ds-weight-medium);
+  transition:
+    background-color var(--ds-duration-fast) var(--ds-ease-standard),
+    color var(--ds-duration-fast) var(--ds-ease-standard);
+}
+
+.ds-settings-page .theme-option:hover {
+  color: var(--ds-text);
+}
+
+.ds-settings-page .theme-option.active {
+  background: var(--ds-surface);
+  color: var(--ds-text);
+  box-shadow: var(--ds-shadow-card);
+}
+
+.ds-settings-page .setting-row input[type='text'],
+.ds-settings-page .setting-row input[type='password'],
+.ds-settings-page .setting-row input[type='number'],
+.ds-settings-page .setting-row select,
+.ds-settings-page .settings-form input,
+.ds-settings-page .settings-form select {
+  border-radius: var(--ds-radius-md);
+  font-size: var(--ds-text-sm);
+}
+
+.ds-settings-page .setting-row input:focus-visible,
+.ds-settings-page .setting-row select:focus-visible,
+.ds-settings-page .settings-form input:focus-visible,
+.ds-settings-page .settings-form select:focus-visible {
+  outline: 0;
+  box-shadow: var(--ds-focus-ring);
+}
+
+.ds-settings-page .chaoxing-card {
+  border-radius: var(--ds-radius-md);
+  background: var(--ds-surface-muted);
+}
+
+.ds-settings-page .sync-banner {
+  border-radius: var(--ds-radius-md);
+  font-size: var(--ds-text-xs);
+}
+
+@media (max-width: 1100px) {
+  .ds-settings-page .settings-nav {
+    display: block;
+    overflow: visible;
+  }
+
+  .ds-settings-page .settings-nav button {
+    width: 100%;
+  }
+}
+
+@media (max-width: 1024px) {
+  .ds-dashboard .overview-bar {
+    gap: 6px 14px;
+  }
+
+  .ds-dashboard .agenda-row {
+    grid-template-columns: 18px minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
+    row-gap: 4px;
+  }
+
+  .ds-dashboard .agenda-row .task-check {
+    grid-row: 1 / span 2;
+  }
+
+  .ds-dashboard .agenda-main {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .ds-dashboard .agenda-row .platform-tag {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+
+  .ds-dashboard .agenda-due {
+    grid-column: 3;
+    grid-row: 2;
+    align-self: center;
+  }
+
+  .ds-dashboard .dashboard-lower > .panel:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 900px) {
+  .ds-settings-page .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .ds-settings-page .settings-nav {
+    position: static;
+    display: flex;
+    flex-direction: row;
+    overflow-x: auto;
+    padding: 5px;
+  }
+
+  .ds-settings-page .settings-nav button {
+    width: auto;
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .ds-dashboard .week-table {
+    overflow-x: auto;
+  }
+}

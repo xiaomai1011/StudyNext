@@ -12,6 +12,7 @@ export interface SessionHttpRequest {
   referer?: string
   accept?: string
   transport?: SessionTransport
+  signal?: AbortSignal
 }
 
 export interface SessionHttpResponse {
@@ -19,6 +20,14 @@ export interface SessionHttpResponse {
   finalUrl: string
   body: string
   transport: SessionTransport
+}
+
+export class SessionRequestTimeoutError extends Error {
+  override readonly name = 'SessionRequestTimeoutError'
+
+  constructor() {
+    super('请求超时')
+  }
 }
 
 export interface SessionHttpClient {
@@ -51,15 +60,18 @@ export class PortalSessionHttpClient implements SessionHttpClient {
     const maxAttempts = method === 'GET' ? 2 : 1
     let lastError: unknown = null
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      if (input.signal?.aborted) throw abortError()
       try {
         const response = await this.requestOnce(input)
         if (method === 'GET' && response.status >= 500 && attempt + 1 < maxAttempts) {
+          if (input.signal?.aborted) throw abortError()
           await delay(400)
           continue
         }
         return response
       } catch (error) {
         lastError = error
+        if (input.signal?.aborted) throw abortError()
         if (attempt + 1 >= maxAttempts) break
         await delay(400)
       }
@@ -75,9 +87,9 @@ export class PortalSessionHttpClient implements SessionHttpClient {
     try {
       return await this.requestWithFetch(input)
     } catch (error) {
+      if (input.signal?.aborted || input.transport) throw error
       // Chromium 偶尔会把跨子域 iframe 请求判为 blocked-by-client；
       // 同一 Session 的 net.request 走网络栈的另一条路径，作为只读兜底。
-      if (input.transport) throw error
       return this.requestWithNet(input)
     }
   }
@@ -103,7 +115,14 @@ export class PortalSessionHttpClient implements SessionHttpClient {
   private async requestWithFetch(input: SessionHttpRequest): Promise<SessionHttpResponse> {
     const portalSession = this.getSession()
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, REQUEST_TIMEOUT_MS)
+    const abortFromInput = (): void => controller.abort()
+    if (input.signal?.aborted) controller.abort()
+    else input.signal?.addEventListener('abort', abortFromInput, { once: true })
     try {
       const response = await portalSession.fetch(input.url, {
         method: input.method ?? 'GET',
@@ -121,8 +140,12 @@ export class PortalSessionHttpClient implements SessionHttpClient {
         body,
         transport: 'session_fetch'
       }
+    } catch (error) {
+      if (timedOut) throw new SessionRequestTimeoutError()
+      throw error
     } finally {
       clearTimeout(timer)
+      input.signal?.removeEventListener('abort', abortFromInput)
     }
   }
 
@@ -139,10 +162,36 @@ export class PortalSessionHttpClient implements SessionHttpClient {
       })
       const headers = this.buildHeaders(portalSession, input)
       for (const [key, value] of Object.entries(headers)) request.setHeader(key, value)
+      let settled = false
+      const cleanup = (): void => {
+        clearTimeout(timer)
+        input.signal?.removeEventListener('abort', onAbort)
+      }
+      const fail = (error: unknown): void => {
+        if (settled) return
+        settled = true
+        cleanup()
+        reject(error)
+      }
+      const succeed = (response: SessionHttpResponse): void => {
+        if (settled) return
+        settled = true
+        cleanup()
+        resolve(response)
+      }
+      const onAbort = (): void => {
+        request.abort()
+        fail(abortError())
+      }
       const timer = setTimeout(() => {
         request.abort()
-        reject(new Error('请求超时'))
+        fail(new SessionRequestTimeoutError())
       }, REQUEST_TIMEOUT_MS)
+      if (input.signal?.aborted) {
+        onAbort()
+        return
+      }
+      input.signal?.addEventListener('abort', onAbort, { once: true })
       request.on('response', (response) => {
         const chunks: Buffer[] = []
         let size = 0
@@ -151,23 +200,16 @@ export class PortalSessionHttpClient implements SessionHttpClient {
           if (size <= MAX_BODY_BYTES) chunks.push(chunk)
         })
         response.on('end', () => {
-          clearTimeout(timer)
-          resolve({
+          succeed({
             status: response.statusCode,
             finalUrl: input.url,
             body: Buffer.concat(chunks).toString('utf8'),
             transport: 'net_request'
           })
         })
-        response.on('error', (error) => {
-          clearTimeout(timer)
-          reject(error)
-        })
+        response.on('error', fail)
       })
-      request.on('error', (error) => {
-        clearTimeout(timer)
-        reject(error)
-      })
+      request.on('error', fail)
       if (input.form) {
         request.setHeader('Content-Type', 'application/x-www-form-urlencoded')
         request.write(new URLSearchParams(input.form).toString())
@@ -176,10 +218,7 @@ export class PortalSessionHttpClient implements SessionHttpClient {
     })
   }
 
-  private buildHeaders(
-    portalSession: Session,
-    input: SessionHttpRequest
-  ): Record<string, string> {
+  private buildHeaders(portalSession: Session, input: SessionHttpRequest): Record<string, string> {
     const headers: Record<string, string> = {
       Accept: input.accept ?? 'text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8',
       'Accept-Language': 'zh-CN,zh;q=0.9',
@@ -219,4 +258,10 @@ async function readLimitedBody(response: Response): Promise<string> {
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function abortError(): Error {
+  const error = new Error('请求已取消')
+  error.name = 'AbortError'
+  return error
 }

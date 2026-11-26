@@ -11,7 +11,23 @@ import type {
 import { UNKNOWN_DUE_AT } from './constants'
 
 export function isPlatformTaskDone(kind: PlatformStatusKind): boolean {
+  return kind === 'reviewed' || kind === 'done'
+}
+
+export function isPlatformTaskSubmitted(kind: PlatformStatusKind): boolean {
   return kind === 'submitted' || kind === 'pending_review' || kind === 'reviewed' || kind === 'done'
+}
+
+export function isSyncStale(
+  lastSyncAt: string | null | undefined,
+  intervalMinutes: number,
+  now = Date.now()
+): boolean {
+  if (!Number.isFinite(intervalMinutes) || intervalMinutes <= 0) return false
+  if (!lastSyncAt) return true
+  const last = Date.parse(lastSyncAt)
+  if (!Number.isFinite(last)) return true
+  return now - last >= intervalMinutes * 60_000
 }
 
 export interface TaskFilters {
@@ -173,7 +189,10 @@ export function weekInSchedule(spec: string, week: number): boolean {
 }
 
 /** 以学期第 1 周周一（YYYY-MM-DD，北京时间）为锚点计算某天是第几周。 */
-export function semesterWeekOf(date: Date, semesterStart: string | null | undefined): number | null {
+export function semesterWeekOf(
+  date: Date,
+  semesterStart: string | null | undefined
+): number | null {
   if (!semesterStart) return null
   const start = new Date(`${semesterStart}T00:00:00+08:00`)
   if (!Number.isFinite(start.getTime())) return null

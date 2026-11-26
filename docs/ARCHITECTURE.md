@@ -1,262 +1,222 @@
 # StudyNext 架构设计
 
+本文描述 v0.5.0 的实际实现，不是理想化规划。历史阶段的架构结论以本文和当前源码为准。
+
 ## 1. 设计目标
 
-1. **本地优先**：无学习通账号也能完整使用课程、任务、DDL、日历与提醒。
-2. **诚实同步**：没有授权数据源就显示未配置；失败不能伪装成成功。
-3. **安全隔离**：远程网页只能看到自己的 WebContents，不能触达 Node、SQLite、文件系统或通用 IPC。
-4. **可扩展**：课程/任务/章节/学习点/题目统一领域模型，未来授权适配器、CSV/ICS/JSON 快照都汇入同一存储。
-5. **桌面体验**：Windows 原生窗口、托盘、系统通知、窗口状态记忆、深浅色。
-6. **可审计的增强能力**：学习快照与 AI 解题都明确来源，不把本地导入伪装成实时同步，不内置共享模型凭据。
+StudyNext 是学习通桌面客户端，目标是把课程、章节、学习点、任务、考试与 DDL 收进一个本地优先的 Windows 应用，同时保持以下边界：
+
+1. **本地优先**：课程、任务、资料、下载记录与提醒保存在本机 SQLite；断网时仍能查看已同步数据。
+2. **官方页面优先**：作业编辑、附件上传、草稿保存与提交在隔离的官方页面完成，应用只负责导航、检测与回读。
+3. **Web Session 只读同步**：课程、作业、考试、章节、通知、资料与课表通过用户本人已登录的 Web Session 读取。
+4. **多账号隔离**：每个学习通账号使用独立 SQLite 工作区，按平台数字 UID 隔离。
+5. **诚实状态**：未配置、登录过期、部分成功、失败都必须如实显示，不把页面打开成功当成同步成功。
+6. **不进入平台灰区**：不自动刷课、不伪造签到/学习记录、不自动答题、不绕过验证码或监考。
+
+明确不做：AI 解题入口、学习通官方 API 的未授权调用、远程页面内的 Node.js/文件系统/通用 IPC、自动提交作业。
 
 ## 2. 进程架构
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│ Electron main                                               │
-│                                                             │
-│  index.ts                                                   │
-│   ├─ BrowserWindow (sandbox, contextIsolation, preload)     │
-│   ├─ Tray + native Notification                             │
-│   ├─ ReminderScheduler ── SQLite                            │
-│   ├─ AiService ── safeStorage + OpenAI-compatible HTTPS      │
-│   ├─ Snapshot importer ── JSON → Store                       │
-│   └─ PortalService ── WebContentsView (persist session)     │
-│                                                             │
-│  ipc.ts ── Zod validation ── Store / Scheduler / Portal / AI │
-└───────────────▲─────────────────────────────┬───────────────┘
-                │ contextBridge               │ HTTPS
-┌───────────────┴───────────────┐   ┌─────────▼───────────────┐
-│ Renderer (React)              │   │ 学习通官方网页           │
-│ sandbox: true                 │   │ sandbox: true            │
-│ no Node / no ipcRenderer      │   │ no app preload          │
-│ window.studynext typed API    │   │ no nodeIntegration       │
-└───────────────────────────────┘   └─────────────────────────┘
+┌──────────────────────────────── Main process ────────────────────────────────┐
+│ app lifecycle / BrowserWindow / tray / global shortcuts                      │
+│ SQLite (per-account workspace) / migrations / backups                        │
+│ IPC handlers (Zod validation + sender check)                                 │
+│ ReminderScheduler + retry policy + Windows Task Scheduler registration       │
+│ ChaoxingSessionService → PortalService → WebContentsView (persist partition) │
+└──────────────────────────────────────────────────────────────────────────────┘
+        ▲ ipcRenderer.invoke / send                  │ load https only
+        │                                            ▼
+┌──────── Renderer (sandboxed) ────────┐   ┌──── Official website ────────────┐
+│ React 19 / Vite / Tailwind + studio  │   │ untrusted remote content          │
+│ no Node.js, no direct fetch          │   │ sandbox, contextIsolation, no     │
+│ window.studynext typed API           │   │ preload, no nodeIntegration       │
+└──────────────────────────────────────┘   └───────────────────────────────────┘
 ```
+
+关键点：
+
+- Renderer 只能通过 preload 暴露的 `window.studynext` 访问主进程能力；所有 IPC 输入由主进程 Zod 校验，并校验发送者是否为应用主窗口。
+- Portal 使用独立持久分区 `persist:studynext-portal`，`WebContentsView` 的 `webPreferences` 为 `sandbox: true`、`contextIsolation: true`、`nodeIntegration: false`、`nodeIntegrationInWorker: false`、`nodeIntegrationInSubFrames: false`、`webviewTag: false`、无 preload。
+- 主进程可直接复用 Portal Session 发起 `net.request` 下载，但不会把 Cookie 复制到默认 Session，也不向 Renderer 暴露 Cookie/Token。
 
 ## 3. 目录与模块
 
 ```text
-src/
-├─ main/
-│  ├─ index.ts                 应用生命周期、窗口、托盘、通知
-│  ├─ ipc.ts                   IPC handler、sender 校验、错误转换
-│  ├─ window-state.ts          窗口位置/大小/最大化持久化
-│  ├─ storage/store.ts         SQLite 连接、schema、DAO、seed
-│  ├─ notifications/scheduler.ts
-│  ├─ integrations/import.ts   CSV/ICS
-│  ├─ integrations/snapshot.ts JSON 学习快照解析/导入
-│  ├─ integrations/ai.ts       OpenAI 兼容请求、Key 加密
-│  ├─ integrations/sync.ts     授权适配器接口 + 状态机
-│  └─ portal/
-│     ├─ security.ts           URL 白名单、webPreferences、安全状态
-│     └─ service.ts            WebContentsView 生命周期与跳转拦截
-├─ preload/
-│  ├─ index.ts                 contextBridge 最小 API
-│  └─ index.d.ts               Window 类型声明
-├─ renderer/src/
-│  ├─ App.tsx                  路由、bootstrap、Toast、全局事件
-│  ├─ pages/                   仪表盘/学习中心/课程/任务/日历/题目助手/官方页面/设置
-│  ├─ components/              Modal/Toast/TaskEditor/TaskDetail/...
-│  └─ lib/format.ts            日期、文案、剩余时间格式化
-└─ shared/
-   ├─ types.ts                 领域类型 + StudyNextApi
-   ├─ ipc.ts                   channel 常量
-   ├─ constants.ts             预设、内置入口、白名单根域
-   ├─ domain.ts                纯领域函数
-   └─ validation.ts            Zod schema
+src/main/
+  index.ts                    生命周期、窗口、托盘、通知、启动参数
+  ipc.ts                      IPC 路由、校验、错误转换
+  account-switch.ts           多账号切换与受控重启
+  startup-workspace.ts        启动工作区选择/迁移
+  window-state.ts             窗口位置与尺寸
+  storage/store.ts            schema、迁移、DAO、演示数据、投递 claim
+  storage/workspaces.ts       每账号工作区注册表、备份与迁移
+  notifications/scheduler.ts  提醒候选、去重、启动补发
+  notifications/headless.ts   --check-reminders 无头检查
+  notifications/system-reminder.ts  Task Scheduler 注册/查询/删除
+  notifications/retry-policy.ts     失败退避
+  integrations/import.ts      CSV/ICS 导入
+  integrations/snapshot.ts    JSON 快照导入
+  integrations/sync.ts        同步状态机与旧 Provider 接口
+  integrations/sync-status.ts 同步状态持久化
+  integrations/chaoxing/      Web Session 适配器、解析器、凭据、下载
+  materials/                  资料下载来源与本地文件核验
+  portal/                     URL 白名单、WebContentsView、安全、下载、上传事件
+src/preload/                  contextBridge 类型化 API
+src/shared/                   领域类型、IPC 合约、纯函数
+src/renderer/src/
+  App.tsx                     三顶层标签、全局缩放、同步协调、Portal 浮层
+  pages/                      Dashboard、CourseWorkspace、Tasks、Calendar、Records、Exams、Notices、Portal、Settings
+  components/                 CommandPalette、TaskDetail、TaskEditor、DownloadQueue、LoginDialog、Modal、Toast
+  ui/studio.css               Studio 设计 token 与全局样式
+tests/unit/                   Vitest 单元测试
+tests/e2e/                    Playwright Electron E2E
 ```
 
 ## 4. 数据模型
 
-SQLite 文件：`%LOCALAPPDATA%\StudyNext\studynext.sqlite`（可用 `STUDYNEXT_DATA_DIR` 覆盖）。
+SQLite 使用 Electron 内置 `node:sqlite` 的 `DatabaseSync`，连接开启 `foreign_keys = ON`。核心表：
 
-| 表                        | 作用          | 关键约束                                                                                                                                               |
-| ------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `courses`                 | 课程与课表    | `schedule_json` 存 `CourseSession[]`；收藏 0/1；`external_id` 可空                                                                                     |
-| `course_chapters`         | 课程章节      | `(course_id, source, external_id)` 唯一；删除课程级联                                                                                                  |
-| `study_points`            | 学习点        | `(course_id, source, external_id)` 唯一；记录完成状态/耗时                                                                                             |
-| `tasks`                   | 任务与 DDL    | `status`、`priority`、`kind` CHECK；`(source, external_id)` 唯一；`completion_source`、`source_updated_at`、`manual_fields_json`、`field_sources_json` |
-| `task_change_log`         | 任务变更历史  | 任务级联删除；记录 origin、摘要与逐字段变化                                                                                                            |
-| `task_reminders`          | 提醒规则      | `(task_id, offset_minutes)` 唯一；offset ≥ 5 分钟                                                                                                      |
-| `notification_deliveries` | 通知去重      | 主键 `dedupe_key`，task/rule/due_at 三元组                                                                                                             |
-| `questions`               | 题目卡        | 题干/答案/解析/标签 JSON/来源；课程可空                                                                                                                |
-| `settings`                | 键值设置      | JSON 值                                                                                                                                                |
-| `official_entries`        | 官方入口      | 内置/自定义、启用、排序                                                                                                                                |
-| `app_meta`                | schema 版本等 | 迁移锚点；AI Key 密文与快照元数据也存此表                                                                                                              |
+| 表                               | 用途                                            |
+| -------------------------------- | ----------------------------------------------- |
+| `courses`                        | 课程、学期、教学班、教师、颜色、收藏            |
+| `course_chapters`                | 章节与小节、平台 chapter id、任务点统计         |
+| `study_points`                   | 学习点/任务点、完成状态、来源                   |
+| `tasks`                          | 作业/本地任务、平台六态、截止、成绩、批语、附件 |
+| `exams`                          | 考试安排                                        |
+| `materials`                      | 课程资料、类型、大小、来源 URL                  |
+| `downloads`                      | 下载记录、状态、进度、保存路径、附件身份        |
+| `material_local_files`           | 本地文件核验表                                  |
+| `app_notices`                    | 学校/课程通知                                   |
+| `task_change_log`                | 任务字段变更审计                                |
+| `task_reminders`                 | 提醒规则与偏移量                                |
+| `notification_deliveries`        | 通知投递 claim 与幂等去重                       |
+| `notification_delivery_failures` | 失败重试队列与 `last_error`                     |
+| `settings`                       | 应用设置                                        |
+| `official_entries`               | 课程官方入口 URL                                |
+| `app_meta`                       | schema 版本、迁移标记等                         |
 
-外键开启 `PRAGMA foreign_keys = ON`。删除任务级联清理提醒与投递记录；修改截止时间主动清理旧投递，保证改期后能再次提醒。
+数据不变量：
 
-### 领域类型
+- 所有日期以 ISO 8601 字符串存储；展示时使用本机时区。
+- 任务唯一键包含来源与外部 ID；快照导入任务带课程前缀，避免跨课程冲突。
+- 章节/学习点唯一键为 `(course_id, source, external_id)`，不能按全局 external_id 去重。
+- 平台任务状态六态：`not_submitted`、`submitted`、`pending_review`、`reviewed`、`done`、`unknown`；本地完成状态单独存储，不用逾期覆盖平台状态。
+- 课程、任务、成绩、批语、附件使用“未读取 / 有效值 / 平台明确为空”三态更新，不完整详情不得清空历史值。
+- 修改 `dueAt` 必须清除旧 `notification_deliveries` 与过期失败记录。
+- 删除任务依赖外键级联清理提醒、投递和失败记录。
+- `lastCompleteSyncAt` 仅完整成功更新；partial/failure 保留上一次完整成功时间。
 
-- `Course`：`id/externalId/name/code/teacher/semester/category/color/favorite/schedule/source/sourceUrl`。
-- `Chapter`：`id/courseId/externalId/title/sortOrder/progress/points/lastStudiedAt/source`。
-- `StudyPoint`：`id/chapterId/courseId/externalId/title/kind/status/durationMinutes/sortOrder/source`；类型包括阅读、视频、测验、讨论、作业。
-- `Task`：`id/title/description/courseId/priority/kind/status/dueAt/completedAt/completionSource/source/externalId/sourceUpdatedAt/manualFields/fieldSources/reminders`。`completionSource` 区分本地完成与平台完成；`manualFields` 保护本地修改不被后续导入覆盖。
-- `QuestionCard`：`id/question/answer/explanation/courseId/tags/source/createdAt/updatedAt`。
-- `ReminderRule`：`id/taskId/offsetMinutes/enabled`。
-- `SyncStatus`：`state/message/source/lastAttemptAt/lastSuccessAt/detail/snapshot`。
-- `BootstrapData`：一次性返回课程、任务、章节、学习点、题库、设置、通知、同步状态、入口、应用信息与提醒运行时信息。
+## 5. 账号与工作区
 
-## 5. IPC 边界
+- 账号凭据由 `ChaoxingCredentialStore` 使用 Electron `safeStorage`（Windows DPAPI）保存；`StoredAccountV2` 包含 id、username、password、displayName、school、platformUid、lastUsedAt。
+- 每个账号按平台数字 UID 派生稳定工作区 id，数据库位于数据目录 `workspaces/` 下；注册表为 `account-workspaces.json`。
+- 新账号首次登录后绑定 `platformUid`；历史库归属不明时保留为只读历史库，不自动认领、不覆盖。
+- 账号切换通过主进程受控重启：检查作业编辑/上传状态，停止同步与调度器，写入 pending switch，再装载目标工作区。
+- 备份使用 `VACUUM INTO` 生成事务一致的 SQLite 副本，并验证表数量与完整性。
 
-渲染器只能访问 `window.studynext`：
+## 6. IPC 边界
 
-- `bootstrap()`
-- `tasks.create/update/remove/setCompleted/history`
-- `courses.setFavorite`
-- `study.setPointCompleted`
-- `questions.create/update/remove`
-- `ai.getConfig/updateConfig/ask`
-- `settings.update/testNotification`
-- `demo.reset`
-- `imports.csvIcs/snapshot`
-- `sync.status/run`
-- `portal.open/close/back/forward/reload/clearSession/clearNavigationLog/openInitialInBrowser/setBounds/securityState`
-- `entries.create/updateEnabled/remove`
-- `window.minimize/toggleMaximize/close/quit/isMaximized`
-- `app.onNavigate/onReminder/onFocusTask/openDataDirectory/openExternal`
+IPC 合约集中在 `src/shared/ipc.ts`，类型在 `src/shared/types.ts`，preload 只暴露白名单方法。主要分组：
 
-主进程处理规则：
+- app：bootstrap、打开数据目录、外部打开、窗口控制；
+- tasks：CRUD、完成、历史、附件下载；
+- courses/study：课程收藏、学习点；
+- settings：读取/更新、测试通知；
+- notifications：系统提醒状态、重新注册/修复；
+- imports：CSV、ICS、JSON 快照；
+- sync：状态、全量/手动同步、取消；
+- chaoxing：登录检查、同步、重试、进度、头像、凭据 CRUD、自动登录、账号切换；
+- portal：打开/隐藏/关闭、前进后退、刷新、清会话、安全状态、下载/上传/提交事件；
+- materials：下载、本地文件核验；
+- events：导航、提醒、聚焦任务、窗口最大化、Portal 状态。
 
-1. `assertSender` 只接受主窗口 `webContents`。
-2. 所有写操作通过 Zod schema 校验；日期与 URL 在进入存储前再次检查。
-3. 统一把内部错误转成 `UserFacingError` 的 message，不把堆栈发给渲染器。
-4. 事件通过 `event:navigate`、`event:reminder`、`event:portal-state` 等单向推送。
+新增 IPC 必须同时更新合约、preload、main handler 与 Zod 校验，并为输入校验补单测。
 
-## 6. 提醒调度
-
-```text
-dueAt - offsetMinutes = scheduledFor
-```
-
-- 仅对 `status = todo` 且 `dueAt > now` 的任务生成候选。
-- 普通 tick 每 30 秒，允许 2 分钟迟到窗口。
-- 启动时若启用补发，允许最近 10 分钟窗口内的错过提醒。
-- 投递前 `claimDelivery` 写入唯一 key；通知失败 `releaseDelivery` 回滚，允许下次重试。
-- 系统不支持 `Notification` 时，调度器继续运行并通过 `event:reminder` 推送应用内提醒；能力状态由 `reminderRuntime.systemNotificationsSupported` 暴露。
-- 修改截止时间会删除该任务旧投递；完成/删除任务不再产生候选。
-- `NotificationScheduler` 是接口，`createNotificationScheduler()` 是唯一工厂；当前实现仍是进程内调度器，可替换为 Windows 计划任务实现而不改 IPC。
-- **进程退出后定时器不存在**。这是明确的产品限制，不伪造后台能力。Windows 系统级方案的调研与推荐路线见 [WINDOWS_NOTIFICATIONS.md](WINDOWS_NOTIFICATIONS.md)。
-
-## 7. Portal 安全模型
-
-`PortalService` 使用 `WebContentsView`：
-
-```ts
-{
-  partition: 'persist:studynext-portal',
-  sandbox: true,
-  contextIsolation: true,
-  nodeIntegration: false,
-  nodeIntegrationInWorker: false,
-  nodeIntegrationInSubFrames: false,
-  webviewTag: false,
-  spellcheck: false
-}
-```
-
-不设置 `preload`。远程页面无法访问 `window.studynext`。
-
-URL 规则：
-
-- 只允许 `https:`，拒绝带 userinfo 的地址；官方入口域名必须是学习通域名或子域。
-- 基础 host 必须等于或属于 `chaoxing.com` / `xuexitong.com`。
-- 用户可以在设置中添加校园 SSO 域名；只允许 HTTPS、443、无 userinfo 的精确域名或子域，最多 20 个。
-- 拒绝 `javascript:`、`file:`、`data:`、`about:` 以及不在白名单中的域名。
-- `will-navigate`、`will-redirect`、`setWindowOpenHandler`、`will-attach-webview`、下载与权限请求全部拦截。
-- 会话隔离在 `persist:studynext-portal`，清空会话会清理 storage 与 cache。
-- 导航日志最多 30 条，只保存 `action/allowed/reason` 和去掉 query/hash 的 URL；不保存 Cookie、Token 或页面内容。
-
-登录状态仅为 UI 提示：
-
-- `passport`、登录页或 `cas` 路径判定为 `logged_out`；
-- `i.chaoxing.com/base`、`i.chaoxing.com/visit`，或从已登出状态回到官方域，判定为 `logged_in`；
-- 其他页面为 `unknown`。这是启发式状态，不是 token 校验，不应被描述为“已接入账号体系”。
-
-## 8. 导入与同步
-
-### CSV
-
-支持表头别名（中文/英文）：
+## 7. 学习通同步
 
 ```text
-标题, 课程/所属课程, 截止时间, 优先级, 类型, 提醒, 描述
-title, course, due, priority, kind, reminders, description
+Renderer 触发
+  → IPC sync/chaoxing
+  → ChaoxingSessionService.checkWithOperation / syncWithAuthCheck
+  → PortalService 导航到官方页面（登录态检测）
+  → ChaoxingSessionAdapter.pull()
+  → parsers（课程/作业/考试/章节/通知/资料/课表）
+  → Normalizer 写入领域模型
+  → SyncService.recordSessionResult()
+  → SQLite + Renderer 刷新
 ```
 
-日期支持 `YYYY-MM-DD`、`YYYY-MM-DD HH:mm`、ISO 本地时间；提醒支持 `3d`、`1d`、`3h`、`1h`、`30m`、`提前3天`、数字分钟。
+要点：
 
-### ICS
+- 认证状态四态：`unknown`、`logged_out`、`authenticated`、`expired`。401/403/安全验证页立即停止同步并保留失败原因。
+- 同步状态五态：`not_configured`、`syncing`、`success`、`partial`、`failure`。
+- 全量同步由主进程串行执行；`useSyncScheduler` 在启动、前台周期、后台恢复、失败退避时触发，间隔可配置 3/5/10/15 分钟或关闭。
+- 单课程重试是局部操作，不覆盖全局同步状态；partial 不更新 `lastCompleteSyncAt`。
+- 页面解析依赖平台 DOM/HTML，解析器必须保持可观测、可回退；任何页面打开成功都不等于同步成功。
 
-解析 `VEVENT`、`DTSTART`（DATE 或 DATE-TIME）、UTC `Z`、`TZID`、`DESCRIPTION`、`CATEGORIES`、`UID`；折行展开与转义处理。按 UID 去重。
+详细能力矩阵与授权边界见 [CHAOXING_INTEGRATION.md](CHAOXING_INTEGRATION.md)。
 
-### JSON 学习快照
+## 8. Portal 安全
 
-`src/main/integrations/snapshot.ts` 接受用户选择的本地 JSON 文件，支持根对象或 `data` 包装：
+- 仅允许 `chaoxing.com` 与 `xuexitong.com` 及其子域；SSO 跳转需在可信域名列表内。
+- 禁止 `javascript:`、`file:`、`data:` 与未知 host。
+- `will-navigate` 与 `setWindowOpenHandler` 双重校验；新窗口一律拒绝或转由系统浏览器打开。
+- 远程页面不注入 preload，不开启 Node.js，不暴露通用 IPC。
+- 所有 URL 在日志与 UI 中使用脱敏显示，不记录查询参数中的敏感 token。
+- 下载在 Portal Session 内发起；跨源 Referer 由 `webRequest.onBeforeSendHeaders` 注入，避免 `net.request` 直接设置跨源 Referer 触发 `ERR_BLOCKED_BY_CLIENT`。
 
-- `courses[]`：课程元数据、课表；
-- `chapters[]`：章节与 `points[]`；
-- `homeworks[]` / `exams[]`：转为统一任务；
-- 根级或课程级作业都支持；嵌套任务只解析一次。
+## 9. 提醒调度
 
-解析结果使用稳定外部 ID；课程/章节/学习点唯一键均包含 `course_id`，避免不同课程使用相同 `chapter-1` 时互相覆盖。任务外部 ID 带课程前缀，防止跨课程冲突。写入来源为 `import`，同步状态显示“本地快照 · 非实时同步”。
+### 9.1 进程内
 
-### AI 解题助手
+- `ReminderScheduler` 默认每 30 秒 tick；普通 tick 只投递 2 分钟内到期的提醒。
+- 启动时如开启补发，检查最近 10 分钟内错过的提醒，数量写入 `reminderRuntime.startupCatchUpCount`。
+- 去重键：`taskId:ruleId:dueAt`；投递前 claim，失败释放 claim 并记录 `notification_delivery_failures`。
+- 失败按 1/5/15 分钟退避，最多 4 次；任务完成、删除或截止时间变化后清理旧失败记录。
 
-`src/main/integrations/ai.ts`：
+### 9.2 Windows 系统提醒
 
-- 配置保存在 `app_meta.ai_config`；API Key 使用 Electron `safeStorage` 加密后存 `app_meta.ai_api_key`。
-- Base URL 只接受 HTTPS；`localhost`/`127.0.0.1` 的 HTTP 便于本地模型。
-- 请求以 OpenAI 兼容 `/chat/completions` 格式发送，超时 50 秒，不记录 Key 或完整请求头。
-- 只有用户在题目助手点击“生成思路”时才发起网络请求；结果不会自动写库，需用户确认保存。
+- `--check-reminders` 无头模式：不创建窗口/Renderer/Portal/同步，只读取当前工作区 SQLite、检查到期提醒、发送通知并更新投递记录。
+- 注册当前用户级一次性 Task Scheduler 任务：任务名 `StudyNext-DDL-<host>-<SID 摘要>`，动作 `StudyNext.exe --check-reminders`，`StartWhenAvailable`，不启用 WakeToRun，不要求管理员。
+- 通知点击通过 `studynext://task/<id>` 激活，支持冷启动、单实例转发与 Renderer 就绪握手。
+- NSIS 安装/卸载调用 `--install-reminders` / `--uninstall-reminders`，只操作当前用户任务，不删除用户数据。
+- 真实限制：系统任务未注册、系统通知被关闭、睡眠、SQLite 锁、多用户无 SID 等场景仍可能失败，必须在 UI 中如实显示。
 
-### 授权适配器
+详见 [WINDOWS_REMINDERS.md](WINDOWS_REMINDERS.md)。
 
-```ts
-interface AuthorizedDataAdapter {
-  id: string
-  isConfigured(): boolean
-  pull(): Promise<CourseBundle>
-}
-```
+## 10. UI 架构
 
-`ChaoxingAuthorizedAdapter.isConfigured()` 当前固定 `false`，`pull()` 抛出“学习通授权数据源尚未配置”。`SyncService` 因此返回 `not_configured`，绝不伪造 `success`。公开 OAuth 入口、个人开发者限制与只读接口风险见 [CHAOXING_INTEGRATION_FEASIBILITY.md](CHAOXING_INTEGRATION_FEASIBILITY.md)。
+- 顶层导航为 Studio 三标签：`今天`、`课程`、`作业`；标题栏同时提供全局搜索、缩放、通知、账号、设置与窗口控制。
+- 路由映射：`dashboard`/`calendar` → Dashboard/Calendar；`courses`/`study`/`materials` → CourseWorkspace；`tasks`/`records`/`exams` → Tasks；`notices` → Notices；`settings` → Settings。
+- 跨页状态集中在 `App.tsx`，页面通过 props 传递；不引入大型状态管理库。
+- 组件：`CommandPalette`（Ctrl+K）、`TaskDetail`、`TaskEditor`、`DownloadQueue`、`LoginDialog`、`Modal`、`ToastStack`。
+- 设计 token 在 `src/renderer/src/ui/studio.css`；支持浅色/深色、100%/125%/150% 缩放与 `prefers-reduced-motion`。
+- 日期展示统一使用本机时区；渲染路径不做隐式日期解析。
 
-## 9. UI 架构
+## 11. 测试策略
 
-- `App.tsx` 持有 `BootstrapData`、当前路由、Toast 与全局事件订阅。
-- 页面通过 props 接收数据与操作回调，不直接访问 IPC。
-- `TaskEditor` 负责表单与提醒规则编辑；`TaskDetail` 展示详情与操作；`CourseDetail` 展示课表与收藏。
-- `Study.tsx` 展示课程侧栏、章节与学习点进度；完成状态通过 `study.setPointCompleted` 更新。
-- `Questions.tsx` 负责题库 CRUD 与 AI 解题面板；AI Key 仅在主进程解密使用。
-- 日历使用纯函数生成月网格/周网格，任务与课程按日期映射。
-- 主题使用 `html[data-theme]` 与 CSS 变量；主进程同步 `nativeTheme.themeSource` 与窗口背景色。
+- **单元测试**：Vitest，覆盖纯函数、SQLite schema/迁移、提醒调度与重试、导入、安全、同步状态、IPC 校验。
+- **E2E**：Playwright 启动真实 Electron，覆盖导航、视图渲染、任务 CRUD、资料工作流、Portal 安全、账号切换、提醒与响应式。
+- **截图**：`views.spec.ts` 在浅色/深色与不同缩放下截取主要视图；截图前等待 `page-in` 动画（≥300ms）。
+- **测试隔离**：E2E 使用工作区内临时 `STUDYNEXT_DATA_DIR`，不触碰真实 `%LOCALAPPDATA%`；测试结束清理进程与目录。
+- **真实账号验收**：由用户本人在真实环境执行；Mock/单测通过不等于真实平台通过。
 
-## 10. 测试策略
+详细命令与最近基线见 [TESTING.md](TESTING.md)。
 
-- 单元测试：领域排序/分组/统计、SQLite CRUD/重启、增量导入与手动字段冲突、提醒候选/去重、CSV/ICS、JSON 快照、AI 请求构造、URL 白名单、SSO 域名与数据目录解析。
-- E2E：真实 Electron 启动、首页模拟数据、任务 CRUD、关闭重启持久化、学习点完成、题库 CRUD、快照导入、`window.studynext` 暴露面、Portal 隔离/脱敏日志、所有主要页面与深浅色截图。
-- 打包验证：`npm run build:win` 产出 NSIS 安装包；可运行 `release/win-unpacked/StudyNext.exe` 验证 asar 内资源与 preload 路径。
+## 12. 关键决策
 
-## 11. 关键决策
+1. **Web Session 而非官方 API**：官方 OAuth/机构 API 未获证实与授权；当前以用户本人 Web Session 只读同步为准，不把第三方项目当授权证明。
+2. **官方页面写操作**：作业编辑、附件上传、草稿保存与提交留在官方页面，避免协议漂移与平台行为不一致；应用只做提交检测与回读。
+3. **本地优先**：SQLite 保存已同步数据，断网仍可查看；同步失败不覆盖最后有效数据。
+4. **多账号独立库**：按平台 UID 隔离，避免账号串数据与历史库覆盖。
+5. **系统提醒双通道**：进程内调度保证运行时可提醒；Task Scheduler 无头检查覆盖应用退出后的场景，二者共用幂等键。
+6. **移除 AI 解题**：产品方向已明确 AI 解题下线，避免未经授权的自动答题与隐私风险；仅保留旧库只读兼容。
 
-| 决策                  | 原因                                                | 代价                                 |
-| --------------------- | --------------------------------------------------- | ------------------------------------ |
-| 使用 `node:sqlite`    | 免原生模块编译，Electron 38 内置 Node 22 支持       | API 较新，迁移到更老 Electron 不可用 |
-| 无 ORM                | 数据库小、查询可控、打包体积小                      | 需要手写映射与迁移                   |
-| 日期存 ISO 字符串     | 跨进程/JSON 简单、可排序                            | 展示层必须统一本地化                 |
-| 无全局状态库          | 页面规模可控，减少依赖                              | props 传递较多                       |
-| Portal 不注入 preload | 最大化隔离远程内容                                  | 无法在网页内做深度集成               |
-| 快照来源标记 `import` | 本地 JSON 不能冒充实时学习通同步                    | 用户需手动更新文件                   |
-| AI 使用用户自带 Key   | 不内置共享凭据、不产生平台代答                      | 用户需自行配置服务商                 |
-| 提醒仅在主进程运行    | 不伪造后台能力                                      | 退出后无提醒                         |
-| Electron 45.3.0       | 当前基线；隔离 user-data-dir 下 E2E/构建/打包均通过 | 干净 Windows 发布前仍需回归          |
+## 13. 后续演进
 
-## 12. 后续演进
-
-1. 经授权接入 OAuth/课程/作业数据，适配器输出统一 `CourseBundle`。
-2. 增加 Windows 计划任务或常驻服务，实现真正的退出后提醒（需明确权限与卸载清理）。
-3. 增加 ICS 导出、任务归档、批量操作。
-4. 引入数据库迁移版本表与自动备份。
-5. 代码签名、自动更新、崩溃上报（默认关闭、需用户同意）。
+- 官方 API/机构授权接入：必须先获得书面授权、接口文档、scope 与测试账号。
+- 资料分页、下载失败原因持久化、复杂课表与单双周建模。
+- 更细粒度的同步进度与错误分类。
+- 多 Provider 抽象：保留学习通深度集成，同时支持其他教育平台适配器。
+- 代码签名、自动更新与正式品牌视觉。

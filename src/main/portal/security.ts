@@ -1,42 +1,8 @@
 import type { WebPreferences } from 'electron'
-import { ALLOWED_PORTAL_HOSTS, PORTAL_PARTITION } from '@shared/constants'
+import { PORTAL_PARTITION } from '@shared/constants'
+import { isAllowedPortalUrl, upgradePortalHttpUrl } from '@shared/portal-url'
 
-export function isAllowedPortalUrl(rawUrl: string): boolean {
-  try {
-    const url = new URL(rawUrl)
-    if (url.protocol !== 'https:') return false
-    if (url.username || url.password) return false
-    const hostname = url.hostname.toLocaleLowerCase()
-    return ALLOWED_PORTAL_HOSTS.some(
-      (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
-    )
-  } catch {
-    return false
-  }
-}
-
-/**
- * Some Chaoxing entry pages still redirect from https to http (for example
- * https://i.chaoxing.com/ -> http://i.chaoxing.com/base). The isolated view only
- * accepts HTTPS, so upgrade the same host/path instead of blocking the login
- * flow. Returns null when the URL is not a Chaoxing host or already HTTPS.
- */
-export function upgradePortalHttpUrl(rawUrl: string): string | null {
-  try {
-    const url = new URL(rawUrl)
-    if (url.protocol !== 'http:') return null
-    if (url.username || url.password) return null
-    const hostname = url.hostname.toLocaleLowerCase()
-    const allowed = ALLOWED_PORTAL_HOSTS.some(
-      (domain) => hostname === domain || hostname.endsWith(`.${domain}`)
-    )
-    if (!allowed) return null
-    url.protocol = 'https:'
-    return url.toString()
-  } catch {
-    return null
-  }
-}
+export { isAllowedPortalUrl, upgradePortalHttpUrl }
 
 export function isTrustedSsoUrl(rawUrl: string, trustedDomains: readonly string[]): boolean {
   if (trustedDomains.length === 0) return false
@@ -83,6 +49,7 @@ export function buildPortalWebPreferences(): WebPreferences {
     nodeIntegrationInSubFrames: false,
     webviewTag: false,
     spellcheck: false,
+    backgroundThrottling: false,
     devTools: true
   }
 }

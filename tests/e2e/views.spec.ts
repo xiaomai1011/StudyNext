@@ -32,7 +32,7 @@ test.beforeAll(async () => {
     env
   })
   page = await app.firstWindow()
-  await page.waitForSelector('.app-shell')
+  await page.waitForSelector('.studio-shell')
 })
 
 test.afterAll(async () => {
@@ -40,32 +40,12 @@ test.afterAll(async () => {
   if (dataDir) rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 })
 })
 
-async function open(label: string, title: string): Promise<void> {
-  await page.locator('.nav-item', { hasText: label }).click()
-  await expect(page.locator('.page-title')).toHaveText(title)
-  await page.waitForTimeout(450)
-}
+test('所有主要视图在浅色与深色主题下完整渲染并支持自由缩放', async () => {
+  await page.waitForTimeout(400)
+  await expect(page.locator('.studio-pill-item')).toHaveCount(3)
+  await expect(page.locator('.studio-full-week-table')).toBeVisible()
+  await page.screenshot({ path: 'test-results/studio-today-light.png' })
 
-test('所有主要视图在浅色与深色主题下完整渲染', async () => {
-  await page.waitForTimeout(450)
-  await page.screenshot({ path: 'test-results/view-dashboard-light.png' })
-
-  await open('学习中心', '学习中心')
-  await page.screenshot({ path: 'test-results/view-study-light.png' })
-
-  await open('课程中心', '我的课程')
-  await page.screenshot({ path: 'test-results/view-courses-light.png' })
-
-  await open('任务中心', '任务与 DDL')
-  await page.screenshot({ path: 'test-results/view-tasks-light.png' })
-
-  await open('题目助手', '题目助手')
-  await page.screenshot({ path: 'test-results/view-questions-light.png' })
-
-  await open('日历', '日历与安排')
-  await page.screenshot({ path: 'test-results/view-calendar-light.png' })
-  await page.getByRole('button', { name: '周视图', exact: true }).click()
-  await expect(page.locator('.week-grid')).toBeVisible()
   await page.getByRole('button', { name: '月视图', exact: true }).click()
   const firstTask = page.locator('.calendar-event').first()
   await expect(firstTask).toBeVisible()
@@ -73,20 +53,73 @@ test('所有主要视图在浅色与深色主题下完整渲染', async () => {
   await expect(page.locator('.modal')).toBeVisible()
   await page.keyboard.press('Escape')
   await expect(page.locator('.modal')).toHaveCount(0)
+  await page.getByRole('button', { name: '周课表', exact: true }).click()
+  await expect(page.locator('.studio-full-week-table')).toBeVisible()
 
-  await open('官方页面', '官方页面')
-  await page.screenshot({ path: 'test-results/view-portal-light.png' })
+  await page.locator('.studio-pill-item', { hasText: '课程' }).click()
+  await expect(page.locator('.studio-course-shell')).toBeVisible()
+  await page.waitForTimeout(350)
+  await page.screenshot({ path: 'test-results/studio-courses-light.png' })
 
-  await open('设置', '偏好与数据')
-  await page.screenshot({ path: 'test-results/view-settings-light.png' })
+  await page.locator('.studio-pill-item', { hasText: '作业' }).click()
+  await expect(page.locator('.page-title')).toHaveText('作业')
+  await page.waitForTimeout(350)
+  await page.screenshot({ path: 'test-results/studio-tasks-light.png' })
+
+  await page.getByRole('tab', { name: /考试安排/ }).click()
+  await expect(page.locator('.studio-exams-embedded')).toBeVisible()
+  await page.waitForTimeout(250)
+  await page.screenshot({ path: 'test-results/studio-exams-light.png' })
+  await page.getByRole('tab', { name: '作业清单', exact: true }).click()
+
+  await page.locator('button[aria-label="设置"]').click()
+  await expect(page.locator('.page-title')).toHaveText('偏好与数据')
+  await page.waitForTimeout(350)
+  await page.screenshot({ path: 'test-results/studio-settings-light.png' })
 
   await page.locator('.theme-option.dark').click()
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
   await page.waitForTimeout(350)
-  await page.screenshot({ path: 'test-results/view-settings-dark.png' })
+  await page.screenshot({ path: 'test-results/studio-settings-dark.png' })
 
-  await page.locator('.nav-item', { hasText: '总览' }).click()
-  await expect(page.locator('.page-title')).toContainText('学习总览')
-  await page.waitForTimeout(450)
-  await page.screenshot({ path: 'test-results/view-dashboard-dark.png' })
+  await page.locator('.studio-pill-item', { hasText: '作业' }).click()
+  await expect(page.locator('.page-title')).toHaveText('作业')
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: 'test-results/studio-tasks-dark.png' })
+
+  await page.getByRole('tab', { name: /考试安排/ }).click()
+  await expect(page.locator('.studio-exams-embedded')).toBeVisible()
+  await page.waitForTimeout(250)
+  await page.screenshot({ path: 'test-results/studio-exams-dark.png' })
+  await page.getByRole('tab', { name: '作业清单', exact: true }).click()
+
+  await page.locator('.studio-pill-item', { hasText: '今天' }).click()
+  await expect(page.locator('.studio-today')).toBeVisible()
+  await expect(page.locator('.studio-full-week-table')).toBeVisible()
+  await page.waitForTimeout(350)
+  await page.screenshot({ path: 'test-results/studio-today-dark.png' })
+
+  await page.locator('.studio-pill-item', { hasText: '课程' }).click()
+  await expect(page.locator('.studio-course-shell')).toBeVisible()
+  await page.waitForTimeout(300)
+  await page.screenshot({ path: 'test-results/studio-courses-dark.png' })
+
+  await page.locator('.titlebar-zoom-trigger').click()
+  await expect(page.locator('.titlebar-zoom-popover')).toBeVisible()
+  await page.locator('.titlebar-zoom-popover .zoom-preset-btn', { hasText: '90%' }).click()
+  await expect
+    .poll(() =>
+      app.evaluate(({ BrowserWindow }) =>
+        Number((BrowserWindow.getAllWindows()[0]?.webContents.getZoomFactor() ?? 0).toFixed(2))
+      )
+    )
+    .toBe(0.9)
+  await page.keyboard.press('Control+0')
+  await expect
+    .poll(() =>
+      app.evaluate(({ BrowserWindow }) =>
+        Number((BrowserWindow.getAllWindows()[0]?.webContents.getZoomFactor() ?? 0).toFixed(2))
+      )
+    )
+    .toBe(1)
 })

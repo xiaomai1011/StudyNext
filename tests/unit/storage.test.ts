@@ -25,6 +25,41 @@ describe('SQLite 持久化', () => {
     expect(store.listTasks()).toHaveLength(15)
   })
 
+  it('清理学习通学习点时不删除其他来源的学习点', () => {
+    const course = store.listCourses()[0]
+    if (!course) throw new Error('demo course missing')
+    const chapter = store.upsertSnapshotChapter(
+      {
+        courseId: course.id,
+        externalId: 'chaoxing:empty-tasks',
+        title: '平台暂无任务点',
+        sortOrder: 99,
+        progress: 0
+      },
+      'chaoxing'
+    ).chapter
+    store.upsertSnapshotPoint(
+      {
+        chapterId: chapter.id,
+        courseId: course.id,
+        externalId: 'chaoxing:point-to-remove',
+        title: '旧解析误生成的学习点',
+        kind: 'reading',
+        completed: true,
+        durationMinutes: null,
+        sortOrder: 0
+      },
+      'chaoxing'
+    )
+    expect(
+      store.listStudyPoints().some((point) => point.externalId === 'chaoxing:point-to-remove')
+    ).toBe(true)
+    expect(store.deleteProviderStudyPoints(course.id, 'chaoxing')).toBe(1)
+    expect(
+      store.listStudyPoints().some((point) => point.externalId === 'chaoxing:point-to-remove')
+    ).toBe(false)
+  })
+
   it('下载历史可以按单条删除，不影响其他记录', () => {
     const base = {
       filename: '资料.pdf',
@@ -44,6 +79,101 @@ describe('SQLite 持久化', () => {
     const remaining = store.listDownloads()
     expect(remaining.map((item) => item.id)).not.toContain('download-a')
     expect(remaining.map((item) => item.id)).toContain('download-b')
+  })
+
+  it('下载记录保留资料关联，重复更新不会丢失 materialId', () => {
+    const base = {
+      filename: '资料.pdf',
+      url: 'https://pan-yz.chaoxing.com/file',
+      state: 'progressing' as const,
+      receivedBytes: 0,
+      totalBytes: 2048,
+      startedAt: new Date().toISOString(),
+      completedAt: null
+    }
+    store.upsertDownload({ ...base, id: 'download-material', materialId: 'material-a' })
+    store.upsertDownload({
+      ...base,
+      id: 'download-material',
+      state: 'completed',
+      receivedBytes: 2048,
+      completedAt: new Date().toISOString(),
+      materialId: null
+    })
+    const row = store.listDownloads().find((item) => item.id === 'download-material')
+    expect(row?.materialId).toBe('material-a')
+    expect(row?.state).toBe('completed')
+  })
+
+  it('下载记录保留附件身份，重复更新不会丢失 taskId、objectId 和 index', () => {
+    const base = {
+      filename: '作业附件.docx',
+      url: 'https://d0.cldisk.com/download/example',
+      state: 'progressing' as const,
+      receivedBytes: 0,
+      totalBytes: 1024,
+      startedAt: new Date().toISOString(),
+      completedAt: null
+    }
+    store.upsertDownload({
+      ...base,
+      id: 'download-attachment',
+      attachmentTaskId: 'task-a',
+      attachmentObjectId: 'a'.repeat(32),
+      attachmentFileName: '报告.docx',
+      attachmentIndex: 1
+    })
+    store.upsertDownload({
+      ...base,
+      id: 'download-attachment',
+      state: 'completed',
+      receivedBytes: 1024,
+      completedAt: new Date().toISOString()
+    })
+    const row = store.listDownloads().find((item) => item.id === 'download-attachment')
+    expect(row?.attachmentTaskId).toBe('task-a')
+    expect(row?.attachmentObjectId).toBe('a'.repeat(32))
+    expect(row?.attachmentFileName).toBe('报告.docx')
+    expect(row?.attachmentIndex).toBe(1)
+    expect(row?.state).toBe('completed')
+  })
+
+  it('旧下载记录缺少 objectId 时仍可打开并保留为不可验证身份', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'studynext-download-migrate-'))
+    const file = join(dir, 'studynext.sqlite')
+    const first = new StudyNextStore(file)
+    try {
+      first.upsertDownload({
+        id: 'download-old',
+        filename: '旧附件.docx',
+        url: 'https://d0.cldisk.com/download/old',
+        state: 'completed',
+        receivedBytes: 10,
+        totalBytes: 10,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        attachmentTaskId: 'task-old',
+        attachmentIndex: 0
+      })
+    } finally {
+      first.close()
+    }
+    const raw = new DatabaseSync(file)
+    raw.exec('ALTER TABLE downloads DROP COLUMN attachment_object_id')
+    raw.exec('ALTER TABLE downloads DROP COLUMN attachment_file_name')
+    raw.close()
+
+    const migrated = new StudyNextStore(file)
+    try {
+      const row = migrated.listDownloads().find((item) => item.id === 'download-old')
+      expect(row?.attachmentTaskId).toBe('task-old')
+      expect(row?.attachmentObjectId).toBeNull()
+      expect(row?.attachmentFileName).toBeNull()
+      expect(row?.attachmentIndex).toBe(0)
+    } finally {
+      migrated.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('任务新增、读取、修改、完成与删除形成闭环', () => {
@@ -159,7 +289,7 @@ describe('SQLite 持久化', () => {
     const file = join(dir, 'studynext.sqlite')
     const first = new StudyNextStore(file)
     try {
-      first.updateSettings({ theme: 'light', calendarWeekStartsOn: 0 })
+      first.updateSettings({ theme: 'light', calendarWeekStartsOn: 0, uiZoom: 0.85 })
       first.createTask({
         title: '重启后仍然存在的任务',
         description: '持久化验证',
@@ -179,6 +309,7 @@ describe('SQLite 持久化', () => {
       expect(second.listTasks().some((task) => task.title === '重启后仍然存在的任务')).toBe(true)
       expect(second.getSettings().theme).toBe('light')
       expect(second.getSettings().calendarWeekStartsOn).toBe(0)
+      expect(second.getSettings().uiZoom).toBe(0.85)
     } finally {
       second.close()
       rmSync(dir, { recursive: true, force: true })
@@ -338,5 +469,47 @@ describe('SQLite 持久化', () => {
     expect(third.task.status).toBe('done')
     expect(third.task.completionSource).toBe('local')
     expect(third.conflicts).toContain('status')
+  })
+
+  it('旧数据库包含历史 questions 表和 ai_config 元数据时可无损打开', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'studynext-legacy-q-'))
+    const file = join(dir, 'legacy.sqlite')
+    const seeded = new StudyNextStore(file)
+    seeded.close()
+
+    const rawDb = new DatabaseSync(file)
+    try {
+      rawDb.exec(`
+        CREATE TABLE IF NOT EXISTS questions (
+          id TEXT PRIMARY KEY,
+          question TEXT NOT NULL,
+          answer TEXT NOT NULL DEFAULT '',
+          explanation TEXT NOT NULL DEFAULT '',
+          course_id TEXT,
+          tags_json TEXT NOT NULL DEFAULT '[]',
+          source TEXT NOT NULL DEFAULT 'manual',
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        INSERT INTO questions (id, question, answer, explanation, course_id, tags_json, source, created_at, updated_at)
+        VALUES ('legacy-q-1', '旧题目内容', '旧答案', '旧解析', NULL, '[]', 'manual', '2026-11-01T00:00:00.000Z', '2026-11-01T00:00:00.000Z');
+        INSERT OR REPLACE INTO app_meta (key, value) VALUES ('ai_config', '{"enabled":true}');
+      `)
+    } finally {
+      rawDb.close()
+    }
+
+    const reopened = new StudyNextStore(file)
+    try {
+      expect(reopened.listTasks().length).toBeGreaterThan(0)
+      expect(reopened.getMeta('ai_config')).toBe('{"enabled":true}')
+      const row = reopened.db
+        .prepare('SELECT question FROM questions WHERE id = ?')
+        .get('legacy-q-1') as { question: string } | undefined
+      expect(row?.question).toBe('旧题目内容')
+    } finally {
+      reopened.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
