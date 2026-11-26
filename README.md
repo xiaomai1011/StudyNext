@@ -1,87 +1,70 @@
+<div align="center">
+
+<img src="resources/icon.png" width="104" alt="StudyNext icon">
+
 # StudyNext
 
-> 现代化学习通桌面客户端：把课程、作业、资料与 DDL 收进一个本地优先的 Windows 桌面应用。
+**学习通深度集成的桌面学习工作台**
 
-StudyNext 不是学习通官方客户端。课程与作业数据通过**用户本人已登录的学习通 Web Session**只读同步，作业编辑、附件上传、草稿保存与提交均在隔离的官方页面内由用户本人完成；应用不绕过验证码、MFA、监考或教师权限，也不伪造学习记录、签到或提交。
+课程、作业、DDL、资料与提醒，在一个窗口里完成。
 
-当前开发基线为 **v0.5.0**，产品方向与实现边界以 [AGENTS.md](AGENTS.md)、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/STATUS.md](docs/STATUS.md) 为准。
+[![License: MIT](https://img.shields.io/github/license/xiaomai1011/StudyNext?color=4f7cff)](LICENSE)
+![Windows](https://img.shields.io/badge/Windows-10%20%7C%2011-0078D4?logo=windows&logoColor=white)
+![Electron](https://img.shields.io/badge/Electron-45.3-47848F?logo=electron&logoColor=white)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)
+![SQLite](https://img.shields.io/badge/SQLite-node%3Asqlite-003B57?logo=sqlite&logoColor=white)
 
-## 功能
+[产品概览](#-产品概览) · [核心功能](#-核心功能) · [界面](#-界面) · [快速开始](#-快速开始) · [安全边界](#-安全与数据边界) · [文档](#-文档导航)
 
-### 今天
+</div>
 
-- 今日课程、待办、待审核/已提交、近期截止与通知聚合在一页。
-- 周课表固定五时段展示，支持周/日/月/时间轴视图。
-- 顶部状态带显示学习通连接状态、最近同步时间与自动刷新状态。
+---
 
-### 课程
+## 产品概览
 
-- 课程工作台按“课程 → 章节 → 小节 → 学习点”浏览学习进度。
-- 章节筛选、课程内搜索、未完成任务优先排序。
-- 课程资料按教学班合并去重，支持文件夹、链接与文件条目。
-- 任务点进度来自平台真实任务点；无任务点课程保留章节与资料，不伪造 100%。
+StudyNext 是一个面向 Windows 的学习通桌面客户端。它把分散在课程页、作业页、资料页和通知页里的信息整理到一个本地优先的工作台里，让你不用在多个浏览器标签之间来回切换。
 
-### 作业
+它不是学习通官方客户端，也不是学习通网页的简单包装器。课程与作业数据通过**用户本人已经登录的学习通 Web Session**只读同步；作业编辑、附件上传、草稿保存和提交仍然在隔离的官方页面内由用户本人完成。
 
-- 平台六态：`not_submitted`、`submitted`、`pending_review`、`reviewed`、`done`、`unknown`。
-- 平台状态与本地完成状态分离；逾期、待审核、已批阅、已完成分组展示。
-- 截止规划条、提醒规则、成绩与教师批语、作业附件下载。
-- 作业正文、附件上传、暂时保存与提交都在隔离的官方页面完成，提交后自动按课程重新同步。
+> **当前版本：`v0.5.0`（开发基线）**
+> 产品边界、实现状态和真实能力以 [AGENTS.md](AGENTS.md)、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/STATUS.md](docs/STATUS.md) 为准。
 
-### 资料与下载
+## 核心功能
 
-- 主进程通过 Portal 会话流式下载，支持进度、取消、重试与再次下载。
-- 下载记录与本地文件校验表持久化在 SQLite。
-- PDF、图片、文本可在应用内预览；Office、压缩包与链接使用系统方式打开。
-
-### 学习通集成
-
-- 使用 `WebContentsView` 持久分区承载官方页面，不向远程页面注入 preload，不暴露 Node.js、文件系统或通用 IPC。
-- 课程、作业、考试、章节、通知、资料与课表通过页面解析读取。
-- 官方 OAuth/机构 API 尚未获得授权与文档，当前不将其标记为可用能力；详细边界见 [docs/CHAOXING_INTEGRATION.md](docs/CHAOXING_INTEGRATION.md)。
-
-### 多账号与提醒
-
-- 账号凭据使用 Windows DPAPI（Electron `safeStorage`）加密保存，可保存多个账号。
-- 每个学习通账号使用独立 SQLite 工作区，按平台 UID 隔离，不覆盖历史库。
-- DDL 提醒同时支持进程内调度与 Windows 任务计划程序无头检查；应用完全退出后仍可由系统任务触发提醒（需系统任务已注册）。
-- 通知投递失败会持久化并按 1/5/15 分钟有界退避，最多 4 次；详见 [docs/WINDOWS_REMINDERS.md](docs/WINDOWS_REMINDERS.md)。
-
-### 其他
-
-- CSV/ICS/JSON 学习快照手动导入，不冒充实时同步。
-- 浅色/深色主题、100%/125%/150% 界面缩放、`Ctrl+K` 命令面板与全局搜索。
-- Windows 启动项与托盘常驻可选，关闭窗口最小化到托盘。
+| 模块             | 能做什么                                                                                                                                                       |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **今天**         | 今日课程、待交作业、待审核、近期截止和通知聚合在一页；周/日/月/时间轴课表视图；顶部显示学习通连接状态、最近同步时间和自动刷新状态。                            |
+| **课程**         | “课程 → 章节 → 小节 → 学习点”浏览进度；章节筛选、课程内搜索、未完成任务优先排序；资料按教学班合并去重。                                                        |
+| **作业**         | 平台六态（未提交/已提交/待审核/已批阅/已完成/未知）与本地状态分离；截止规划、提醒规则、成绩与教师批语、附件下载；提交后按课程自动重新同步。                    |
+| **资料与下载**   | Portal 会话流式下载，支持进度、取消、重试和再次下载；下载记录与本地文件校验持久化在 SQLite；PDF、图片、文本可应用内预览。                                      |
+| **学习通集成**   | `WebContentsView` 持久分区承载官方页面；课程、作业、考试、章节、通知、资料和课表通过页面解析读取；不向远程页面注入 preload。                                   |
+| **多账号与提醒** | 账号凭据使用 Windows DPAPI（Electron `safeStorage`）加密保存；每个学习通账号使用独立 SQLite 工作区；DDL 提醒支持进程内调度和 Windows Task Scheduler 无头检查。 |
+| **导入与搜索**   | CSV/ICS/JSON 学习快照手动导入；浅色/深色主题、100%/125%/150% 缩放、`Ctrl+K` 命令面板与全局搜索。                                                               |
 
 ## 界面
 
-| 今天                                           | 课程                                             |
-| ---------------------------------------------- | ------------------------------------------------ |
-| ![今天](docs/screenshots/v0.5/today-light.png) | ![课程](docs/screenshots/v0.5/courses-light.png) |
+<p align="center">
+  <img src="docs/screenshots/v0.5/today-light.png" alt="StudyNext 今天视图" width="100%">
+</p>
 
-| 作业                                           | 设置                                              |
-| ---------------------------------------------- | ------------------------------------------------- |
-| ![作业](docs/screenshots/v0.5/tasks-light.png) | ![设置](docs/screenshots/v0.5/settings-light.png) |
+| 课程                                             | 作业                                           |
+| ------------------------------------------------ | ---------------------------------------------- |
+| ![课程](docs/screenshots/v0.5/courses-light.png) | ![作业](docs/screenshots/v0.5/tasks-light.png) |
 
-更多截图见 [docs/screenshots/v0.5](docs/screenshots/v0.5)。
+| 设置                                              | 待审核与任务详情                                                 |
+| ------------------------------------------------- | ---------------------------------------------------------------- |
+| ![设置](docs/screenshots/v0.5/settings-light.png) | ![任务详情](docs/screenshots/v0.5/studio-task-detail-review.png) |
 
-## 技术栈
-
-| 层       | 技术                                                                                 |
-| -------- | ------------------------------------------------------------------------------------ |
-| 桌面框架 | Electron 45.3.0                                                                      |
-| 构建     | electron-vite 6、Vite 8                                                              |
-| UI       | React 19、Tailwind 4、自定义 CSS 设计 token                                          |
-| 语言     | TypeScript 5.9（`strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`） |
-| 数据     | Electron 内置 `node:sqlite`（`DatabaseSync`），不引入原生模块                        |
-| 测试     | Vitest（单元）、Playwright（Electron E2E）                                           |
-| 打包     | electron-builder（Windows NSIS）                                                     |
+更多浅色、深色和缩放截图见 [docs/screenshots/v0.5](docs/screenshots/v0.5)。
 
 ## 快速开始
 
-要求 Windows 10/11、Node.js 22+、npm 10+。
+要求 **Windows 10/11**、**Node.js 22+**、**npm 10+**。
 
 ```powershell
+git clone https://github.com/xiaomai1011/StudyNext.git
+cd StudyNext
 npm install
 npm run dev
 ```
@@ -98,6 +81,14 @@ npm run verify:release
 npm run format:check
 ```
 
+### 构建 Windows 安装包
+
+```powershell
+npm run build:win
+```
+
+构建产物位于 `release/`，其中包括 `StudyNext-Setup-<version>.exe` 和 `win-unpacked/`。安装包当前未签名；运行 `npm run verify:release` 可校验安装包、blockmap 和 manifest 的大小与哈希。
+
 如果当前环境设置了 `ELECTRON_RUN_AS_NODE=1`，启动 GUI 或 E2E 前必须清除。Playwright 需要：
 
 ```text
@@ -106,38 +97,37 @@ npm run format:check
 
 并设置 `STUDYNEXT_DATA_DIR` 指向同一目录，避免系统临时目录的 Chromium 锁权限问题。
 
-## 数据位置
-
-默认数据目录按以下优先级选择：
-
-1. `STUDYNEXT_DATA_DIR` 环境变量；
-2. `%LOCALAPPDATA%\StudyNext`；
-3. `%APPDATA%\StudyNext`。
-
-目录内主要文件：
-
-- `studynext.sqlite`：主数据库；
-- `account-workspaces.json`：多账号工作区注册表；
-- `workspaces/`：每账号独立数据库；
-- `window-state.json`：窗口尺寸与位置；
-- `backups/`：手动/迁移备份。
-
-应用不会自动把数据写入系统临时目录。删除或迁移数据前请先备份整个数据目录。
-
-## 安全与边界
+## 安全与数据边界
 
 - 远程页面只能在隔离的 `WebContentsView` 中打开，所有 URL 进入 Portal 前后都要经过白名单校验。
-- 渲染器不直接访问学习通接口，不持有登录态，不接触 Node.js。
-- 不记录账号、密码、Cookie、Token 或完整敏感 URL。
-- 学习通能力以 [docs/CHAOXING_INTEGRATION.md](docs/CHAOXING_INTEGRATION.md) 的矩阵为准；未配置、失败或部分成功必须如实显示。
-- AI 解题功能已从产品中移除；旧数据库中的 `questions`/`ai_config` 仅做只读迁移兼容，不得恢复入口。
+- 渲染器不直接访问学习通接口，不持有登录态，不接触 Node.js、SQLite 或通用 IPC。
+- 账号、密码、Cookie、Token、完整敏感 URL 不写入日志、源码、测试快照或导出文件。
+- 账号凭据通过 Electron `safeStorage`（Windows DPAPI）加密保存；每个账号使用独立 SQLite 工作区。
+- 学习通接入基于用户本人 Web Session，不代表获得学习通官方 OAuth 或机构 API 授权。
+- 不做自动刷课、伪造学习记录、自动考试、验证码绕过、MFA 绕过、反爬规避或监考绕过。
+- AI 解题功能已从产品中移除；旧数据库中的 `questions`/`ai_config` 仅做只读迁移兼容。
+
+## 技术架构
+
+| 层       | 技术                                                                                 |
+| -------- | ------------------------------------------------------------------------------------ |
+| 桌面框架 | Electron 45.3.0                                                                      |
+| 构建     | electron-vite 6、Vite 8                                                              |
+| UI       | React 19、Tailwind 4、自定义 CSS design tokens                                       |
+| 语言     | TypeScript 5.9（`strict`、`noUncheckedIndexedAccess`、`exactOptionalPropertyTypes`） |
+| 数据     | Electron 内置 `node:sqlite`（`DatabaseSync`），不引入原生模块                        |
+| 进程边界 | main / preload（`contextBridge`）/ sandboxed renderer / 官方网页视图                 |
+| 测试     | Vitest 单元测试、Playwright Electron E2E                                             |
+| 打包     | electron-builder（Windows NSIS）                                                     |
+
+应用分为四层：Electron 主进程负责窗口、SQLite、Portal、同步和系统提醒；preload 只暴露最小、类型化的 IPC API；React renderer 不接触 Node.js；学习通页面在隔离的 `WebContentsView` 中运行。详细架构见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
 ## 项目结构
 
 ```text
 src/main/        主进程：窗口、托盘、SQLite、IPC、Portal、同步、通知
 src/preload/     contextBridge 暴露的最小类型化 API
-src/renderer/    React 渲染器：今天/课程/作业三顶层工作区
+src/renderer/    React 渲染器：今天 / 课程 / 作业三顶层工作区
 src/shared/      领域类型、IPC 合约、纯函数与共享常量
 tests/unit/      Vitest 单元测试
 tests/e2e/       Playwright Electron E2E
@@ -146,7 +136,15 @@ build/           NSIS 安装脚本与图标
 scripts/         发布清单与校验脚本
 ```
 
-## 文档
+## 当前状态
+
+- 版本：`0.5.0`，当前开发分支 `v0.4.0-development`。
+- 最近本地验证：`npm run typecheck` 通过；`npm test` 444/444（51 文件）通过；`npm run test:e2e` 110/110 通过；`npm run build` 通过。
+- 安装包尚未签名，尚未接入自动更新；真实 Windows 安装/覆盖升级/卸载仍需在目标环境验收。
+- 学习通页面解析依赖 DOM/HTML，平台改版可能导致部分字段失败，解析器需要保持可观测和可回退。
+- 真实学习通账号的完整流程验收、复杂课表、资料分页和部分作业的未知字段仍需继续验证。
+
+## 文档导航
 
 - [AGENTS.md](AGENTS.md)：工程约束与 Agent 工作指南
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)：进程架构、数据模型、同步与提醒设计
@@ -159,14 +157,9 @@ scripts/         发布清单与校验脚本
 - [docs/STATUS.md](docs/STATUS.md)：当前开发状态与待办
 - [docs/CHANGELOG.md](docs/CHANGELOG.md)：版本变更记录
 
-## 已知限制
+## 免责声明
 
-- 安装包尚未签名，未接入自动更新。
-- 真实 Windows 安装/覆盖升级/卸载与真实学习通账号全流程验收仍需在目标环境执行。
-- 学习通页面结构变化可能导致解析失败；解析器需要随平台页面更新维护。
-- 部分作业不返回提交时间；详情页未完整读取时保持 `unread`，不猜测。
-- 资料分页、复杂课表（单双周/调休/多教师）等场景仍需继续验证与建模。
-- 应用图标为占位品牌图标，正式发布前应做视觉定稿。
+StudyNext 是非官方、非营利的个人技术项目，与学习通及其关联公司无关。请只使用你本人的账号，并遵守学校与平台的使用规则。项目不会绕过验证码、MFA、监考或教师权限，也不对因使用本软件产生的账号、数据或纪律风险承担责任。
 
 ## 许可证
 

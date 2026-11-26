@@ -2,6 +2,14 @@
   "name": "studynext",
   "version": "0.5.0",
   "description": "StudyNext — 现代化学习通桌面客户端",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/xiaomai1011/StudyNext.git"
+  },
+  "bugs": {
+    "url": "https://github.com/xiaomai1011/StudyNext/issues"
+  },
+  "homepage": "https://github.com/xiaomai1011/StudyNext#readme",
   "main": "./out/main/index.js",
   "author": "StudyNext Contributors",
   "license": "MIT",
